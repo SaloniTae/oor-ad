@@ -1,0 +1,23 @@
+[Unit]
+Description=Ad Injection Server (WebSocket + Admin API + Static)
+After=network.target redis-server.service
+Wants=redis-server.service
+
+[Service]
+Type=simple
+User=adinject
+WorkingDirectory=/opt/ad-injection/server
+EnvironmentFile=/opt/ad-injection/server/.env
+ExecStart=/usr/bin/node /opt/ad-injection/server/index.js
+Restart=always
+RestartSec=3
+LimitNOFILE=200000
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/ad-injection
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

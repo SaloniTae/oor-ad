@@ -1,0 +1,7 @@
+**/node_modules
+**/.env
+.git
+deploy
+DEPLOY.md
+HF_SPACES.md
+*.tar.gz

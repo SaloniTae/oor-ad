@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ad Injection • Admin</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="wrap">
+    <h1>Ad Injection Control</h1>
+
+    <section class="card">
+      <label>Admin Token</label>
+      <input id="token" type="password" placeholder="paste ADMIN_TOKEN" />
+      <div class="row">
+        <button id="save">Save token (this browser)</button>
+        <span id="tokenState" class="muted">not set</span>
+      </div>
+    </section>
+
+    <section class="card">
+      <label>Ad URL (HLS .m3u8 or MP4)</label>
+      <input id="adUrl" placeholder="https://.../ad.m3u8" value="https://test-streams.mux.dev/pts_shift/master.m3u8" />
+      <label>Duration (seconds)</label>
+      <input id="duration" type="number" min="1" max="600" value="15" />
+      <div class="row">
+        <button id="trigger" class="primary">▶ Trigger Ad Now</button>
+        <button id="resume">■ Resume Live</button>
+      </div>
+    </section>
+
+    <section class="card">
+      <h3>Server status</h3>
+      <pre id="stats">–</pre>
+      <button id="refresh">Refresh</button>
+    </section>
+
+    <section class="card">
+      <h3>Log</h3>
+      <pre id="log"></pre>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
