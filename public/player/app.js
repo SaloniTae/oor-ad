@@ -1,140 +1,245 @@
 /**
- * Player: HLS live stream + WebSocket-driven ad injection.
- * Auto-detects deployment mode:
- *   - Same-origin  (/ws, /api/*)     -> single-port build (HF Spaces, Render, docker-compose)
- *   - Explicit ports (:6778 / :6779) -> multi-port VPS build
- * You can force multi-port by setting <meta name="ai-mode" content="multi">.
+ * Seamless HLS ad injection with A/B double-video swap.
+ * ----------------------------------------------------
+ * Two <video> elements are stacked in the DOM. One is visible ("front"),
+ * the other is invisible ("back") and used to preload the NEXT source
+ * (the ad, or the live stream at the catch-up position). Only after the
+ * back video reaches `canplay` do we swap classes — no blank frame, no
+ * spinner. This is how broadcast players avoid the reload gap.
+ *
+ * Catch-up: when an ad starts we save (savedPos, wallClockStart).
+ * When the ad ends, we resume the live stream at savedPos + elapsedWallClock,
+ * i.e. exactly as if live had kept playing in the background (YouTube-style).
  */
 (() => {
-  const video    = document.getElementById('video');
-  const statusEl = document.getElementById('status');
-  const badge    = document.getElementById('badge');
-  const cd       = document.getElementById('countdown');
-  const modeEl   = document.getElementById('mode');
-  const cidEl    = document.getElementById('cid');
+  const videoA  = document.getElementById('videoA');
+  const videoB  = document.getElementById('videoB');
+  const statusEl= document.getElementById('status');
+  const badge   = document.getElementById('badge');
+  const cd      = document.getElementById('countdown');
+  const modeEl  = document.getElementById('mode');
+  const cidEl   = document.getElementById('cid');
+  const unmute  = document.getElementById('unmute');
 
-  const host  = location.hostname;
-  const proto = location.protocol;
+  const host    = location.hostname;
+  const proto   = location.protocol;
   const wsProto = proto === 'https:' ? 'wss' : 'ws';
-
-  // Detection: on 6780 static server -> multi-port; otherwise single-port same-origin.
-  const forced = document.querySelector('meta[name="ai-mode"]')?.content;
+  const forced  = document.querySelector('meta[name="ai-mode"]')?.content;
   const multiPort = forced ? forced === 'multi' : (location.port === '6780');
-
   const WS_URL     = multiPort ? `${wsProto}://${host}:6778/ws`  : `${wsProto}://${location.host}/ws`;
   const CONFIG_URL = multiPort ? `${proto}//${host}:6779/config` : `${proto}//${location.host}/api/config`;
 
-  let hls = null;
-  let liveUrl = null;
-  let adTimer = null;
-  let countdownTimer = null;
-  // Wall-clock time when the ad started, plus the video position at that moment.
-  // On resume we compute: resumeAt = savedPosition + (now - adStartedAt)  → simulates
-  // "live kept playing while the ad was up", exactly like YouTube Live ad breaks.
-  let savedPosition = null;
-  let adStartedAt   = null;
+  // Each slot holds { el, hls }. Front is the one currently on screen.
+  const slots = {
+    A: { el: videoA, hls: null },
+    B: { el: videoB, hls: null },
+  };
+  let frontKey = 'A';
+  const front = () => slots[frontKey];
+  const back  = () => slots[frontKey === 'A' ? 'B' : 'A'];
 
-  function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = 'status ' + (cls || ''); }
-  function setMode(m) { modeEl.textContent = m; }
+  let liveUrl       = null;
+  let adTimer       = null;
+  let countdownTimer= null;
+  let savedPosition = null;  // playhead when the ad started
+  let adStartedAt   = null;  // wall-clock ms when the ad started
+  let currentMode   = 'live';
 
-  function loadSource(url, { isAd = false, duration = 0, resumeAt = null } = {}) {
-    if (hls) { try { hls.destroy(); } catch {} hls = null; }
+  const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
+  const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-    // Once the video is ready, optionally seek to a resume position within the seekable range.
-    const seekWhenReady = () => {
-      if (resumeAt == null) return;
-      const trySeek = () => {
-        try {
-          const sk = video.seekable;
-          if (sk && sk.length) {
-            const start = sk.start(0);
-            const end   = sk.end(sk.length - 1);
-            // Clamp inside seekable range; if position is behind the DVR window, jump to earliest.
-            const target = Math.min(Math.max(resumeAt, start + 0.1), Math.max(end - 0.5, start + 0.1));
-            video.currentTime = target;
-          }
-        } catch {/* ignore */}
-        video.removeEventListener('loadedmetadata', trySeek);
-        video.removeEventListener('canplay', trySeek);
-      };
-      video.addEventListener('loadedmetadata', trySeek, { once: true });
-      video.addEventListener('canplay',        trySeek, { once: true });
+  unmute.onclick = () => {
+    [videoA, videoB].forEach(v => { v.muted = false; v.volume = 1; });
+    front().el.play().catch(()=>{});
+    unmute.textContent = '🔊 Sound on';
+  };
+
+  function newHlsConfig() {
+    return {
+      // Aggressive prefetch & buffer to keep the pipeline full.
+      lowLatencyMode: true,
+      startFragPrefetch: true,
+      maxBufferLength: 30,
+      backBufferLength: 60,
+      maxMaxBufferLength: 60,
+      // Faster recovery from a single bad segment (avoids visible stall).
+      manifestLoadingMaxRetry: 4,
+      manifestLoadingRetryDelay: 500,
+      fragLoadingMaxRetry: 6,
+      fragLoadingRetryDelay: 500,
+      // Start playback as soon as a fragment is ready, not after N.
+      autoStartLoad: true,
     };
+  }
 
-    const isHls = /\.m3u8(\?|$)/i.test(url);
-    if (isHls && window.Hls && Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode: true, backBufferLength: 60 });
-      hls.loadSource(url);
-      hls.attachMedia(video);
-      hls.on(Hls.Events.ERROR, (_e, d) => {
-        if (d.fatal) setTimeout(() => loadSource(url, { isAd, duration, resumeAt }), 1500);
-      });
-    } else {
-      video.src = url;
-    }
-    seekWhenReady();
-    video.play().catch(() => {});
+  function destroySlot(key) {
+    const s = slots[key];
+    if (s.hls) { try { s.hls.destroy(); } catch {} s.hls = null; }
+    try { s.el.pause(); } catch {}
+    // We deliberately DON'T clear src on the front slot until after swap.
+  }
 
-    if (isAd) {
-      setMode('ad');
-      badge.classList.remove('hidden');
-      let remaining = Math.ceil(duration);
-      cd.textContent = remaining;
-      clearInterval(countdownTimer);
-      countdownTimer = setInterval(() => {
-        remaining--; cd.textContent = Math.max(0, remaining);
-        if (remaining <= 0) clearInterval(countdownTimer);
-      }, 1000);
-      clearTimeout(adTimer);
-      adTimer = setTimeout(() => returnToLive(), duration * 1000);
-    } else {
-      setMode('live');
-      badge.classList.add('hidden');
-      clearInterval(countdownTimer);
-      clearTimeout(adTimer);
-    }
+  /**
+   * Load `url` into the BACK slot, seek to `resumeAt` if given,
+   * wait for it to be truly ready (canplay + first frame), then swap to front.
+   * Resolves once the swap has happened.
+   */
+  function loadOnBackAndSwap(url, { resumeAt = null, isAd = false } = {}) {
+    return new Promise((resolve) => {
+      const key = frontKey === 'A' ? 'B' : 'A';
+      const s = slots[key];
+      // Reset the back slot cleanly.
+      destroySlot(key);
+      s.el.removeAttribute('src'); s.el.load();
+
+      let swapped = false;
+      const doSwap = () => {
+        if (swapped) return; swapped = true;
+        // Ensure back is playing before we make it visible.
+        const playPromise = s.el.play();
+        const finalize = () => {
+          // Swap CSS classes: back becomes visible, front becomes hidden.
+          slots[key].el.classList.add('active');
+          slots[frontKey].el.classList.remove('active');
+          // Pause and free the old front (after a tick so its last frame isn't visible while fading).
+          const oldFront = frontKey;
+          frontKey = key;
+          setTimeout(() => destroySlot(oldFront), 200);
+          resolve();
+        };
+        if (playPromise && playPromise.then) playPromise.then(finalize, finalize);
+        else finalize();
+      };
+
+      // Seek + play once we know metadata / first frame is ready.
+      const onCanPlay = () => {
+        s.el.removeEventListener('canplay', onCanPlay);
+        s.el.removeEventListener('loadeddata', onCanPlay);
+        if (resumeAt != null) {
+          try {
+            const sk = s.el.seekable;
+            if (sk && sk.length) {
+              const start = sk.start(0);
+              const end   = sk.end(sk.length - 1);
+              const target = Math.min(Math.max(resumeAt, start + 0.1), Math.max(end - 0.5, start + 0.1));
+              s.el.currentTime = target;
+              // After the seek settles, THEN swap (avoids showing pre-seek frame).
+              const onSeeked = () => { s.el.removeEventListener('seeked', onSeeked); doSwap(); };
+              s.el.addEventListener('seeked', onSeeked, { once: true });
+              // Safety: if `seeked` never fires within 800ms, swap anyway.
+              setTimeout(doSwap, 800);
+              return;
+            }
+          } catch {/* fall through to immediate swap */}
+        }
+        doSwap();
+      };
+      s.el.addEventListener('canplay',    onCanPlay, { once: true });
+      s.el.addEventListener('loadeddata', onCanPlay, { once: true });
+      // Safety timeout: don't hang forever if network is bad.
+      setTimeout(() => { if (!swapped) doSwap(); }, 4000);
+
+      const isHls = /\.m3u8(\?|$)/i.test(url);
+      if (isHls && window.Hls && Hls.isSupported()) {
+        s.hls = new Hls(newHlsConfig());
+        s.hls.attachMedia(s.el);
+        s.hls.on(Hls.Events.MEDIA_ATTACHED, () => s.hls.loadSource(url));
+        s.hls.on(Hls.Events.ERROR, (_e, d) => {
+          if (!d.fatal) return;
+          if (d.type === Hls.ErrorTypes.NETWORK_ERROR) s.hls.startLoad();
+          else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) s.hls.recoverMediaError();
+        });
+      } else {
+        s.el.src = url; s.el.load();
+      }
+    });
+  }
+
+  function startAdUi(duration) {
+    setMode('ad');
+    badge.classList.remove('hidden');
+    let remaining = Math.ceil(duration);
+    cd.textContent = remaining;
+    clearInterval(countdownTimer);
+    countdownTimer = setInterval(() => {
+      remaining--; cd.textContent = Math.max(0, remaining);
+      if (remaining <= 0) clearInterval(countdownTimer);
+    }, 1000);
+    clearTimeout(adTimer);
+    adTimer = setTimeout(returnToLive, duration * 1000);
+  }
+  function stopAdUi() {
+    setMode('live');
+    badge.classList.add('hidden');
+    clearInterval(countdownTimer);
+    clearTimeout(adTimer);
   }
 
   function savePosition() {
-    if (!isFinite(video.currentTime) || video.currentTime <= 0) return;
-    savedPosition = video.currentTime;
-    adStartedAt   = Date.now();
+    const t = front().el.currentTime;
+    if (isFinite(t) && t > 0) { savedPosition = t; adStartedAt = Date.now(); }
   }
 
-  function returnToLive() {
+  async function playAd(adUrl, remainingSeconds) {
+    if (currentMode !== 'ad') savePosition();
+    // Kick off UI immediately (badge + countdown) while the back slot preloads.
+    startAdUi(remainingSeconds);
+    await loadOnBackAndSwap(adUrl, { isAd: true });
+  }
+
+  async function returnToLive() {
     if (!liveUrl) return;
-    // How long the ad actually kept the viewer away from live.
+    stopAdUi();
     const adElapsed = adStartedAt ? (Date.now() - adStartedAt) / 1000 : 0;
-    // Advance the resume point by adElapsed → live "kept running" during the ad.
     const resumeAt = (savedPosition != null) ? (savedPosition + adElapsed) : null;
-    savedPosition = null;
-    adStartedAt   = null;
-    loadSource(liveUrl, { isAd: false, resumeAt });
+    savedPosition = null; adStartedAt = null;
+    await loadOnBackAndSwap(liveUrl, { resumeAt, isAd: false });
+  }
+
+  async function initialLoad() {
+    if (!liveUrl) return;
+    // First-ever load: front slot is empty, so load directly on it (no swap needed).
+    const s = front();
+    destroySlot(frontKey);
+    const isHls = /\.m3u8(\?|$)/i.test(liveUrl);
+    if (isHls && window.Hls && Hls.isSupported()) {
+      s.hls = new Hls(newHlsConfig());
+      s.hls.attachMedia(s.el);
+      s.hls.on(Hls.Events.MEDIA_ATTACHED, () => s.hls.loadSource(liveUrl));
+      s.hls.on(Hls.Events.ERROR, (_e, d) => {
+        if (!d.fatal) return;
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) s.hls.startLoad();
+        else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) s.hls.recoverMediaError();
+      });
+    } else {
+      s.el.src = liveUrl; s.el.load();
+    }
+    s.el.play().catch(()=>{});
   }
 
   function applyState(state) {
     if (!state) return;
     if (state.mode === 'ad' && state.adUrl) {
-      savePosition();
       const elapsed = Math.max(0, (Date.now() - (state.startAt || Date.now())) / 1000);
       const remaining = Math.max(1, (state.duration || 15) - elapsed);
-      loadSource(state.adUrl, { isAd: true, duration: remaining });
+      playAd(state.adUrl, remaining);
     } else {
-      returnToLive();
+      // Already live — nothing to do unless we were mid-ad.
+      if (currentMode === 'ad') returnToLive();
     }
   }
 
   function handleCommand(msg) {
     if (msg.action === 'play_ad') {
-      savePosition();   // remember exact frame the live stream is on
       const elapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
       const remaining = Math.max(1, msg.duration - elapsed);
-      loadSource(msg.adUrl, { isAd: true, duration: remaining });
+      playAd(msg.adUrl, remaining);
     } else if (msg.action === 'resume_live') {
       returnToLive();
     }
   }
 
+  // --- WebSocket w/ exponential backoff ---
   let backoff = 500;
   function connect() {
     setStatus('connecting…');
@@ -149,7 +254,7 @@
       if (m.type === 'welcome') {
         liveUrl = liveUrl || m.liveUrl;
         cidEl.textContent = m.clientId;
-        if (!video.src && liveUrl) loadSource(liveUrl, { isAd: false });
+        if (!front().el.src && !front().hls && liveUrl) initialLoad();
       } else if (m.type === 'state')   applyState(m.state);
       else if (m.type === 'command') handleCommand(m);
     };
@@ -162,7 +267,7 @@
   }
 
   fetch(CONFIG_URL).then(r => r.json())
-    .then(c => { liveUrl = c.liveUrl; if (!video.src) loadSource(liveUrl, { isAd: false }); })
-    .catch(() => {});
+    .then(c => { liveUrl = c.liveUrl; if (!front().hls) initialLoad(); })
+    .catch(()=>{});
   connect();
 })();

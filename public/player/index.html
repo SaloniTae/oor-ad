@@ -14,8 +14,15 @@
   </header>
 
   <main>
-    <video id="video" playsinline controls autoplay muted></video>
-    <div id="badge" class="badge hidden">AD • <span id="countdown">0</span>s</div>
+    <div class="stage">
+      <!-- Double-video A/B swap: only one is visible at a time. -->
+      <video id="videoA" class="v active" playsinline autoplay muted preload="auto"></video>
+      <video id="videoB" class="v"        playsinline           muted preload="auto"></video>
+      <div id="badge" class="badge hidden">AD • <span id="countdown">0</span>s</div>
+    </div>
+    <div class="controls">
+      <button id="unmute">🔊 Unmute</button>
+    </div>
   </main>
 
   <footer>
