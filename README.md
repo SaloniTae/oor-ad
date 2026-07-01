@@ -1,3 +1,12 @@
+---
+title: oor-ad
+emoji: 🚀
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+---
+
 # Ad Injection
 
 Real-time, WebSocket-driven ad injection for HLS livestreams. One admin click switches every connected viewer to an ad, then back to live — with sub-second sync across 1000+ clients.
