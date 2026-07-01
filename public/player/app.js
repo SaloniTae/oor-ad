@@ -28,23 +28,51 @@
   let liveUrl = null;
   let adTimer = null;
   let countdownTimer = null;
+  // Wall-clock time when the ad started, plus the video position at that moment.
+  // On resume we compute: resumeAt = savedPosition + (now - adStartedAt)  → simulates
+  // "live kept playing while the ad was up", exactly like YouTube Live ad breaks.
+  let savedPosition = null;
+  let adStartedAt   = null;
 
   function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = 'status ' + (cls || ''); }
   function setMode(m) { modeEl.textContent = m; }
 
-  function loadSource(url, { isAd = false, duration = 0 } = {}) {
+  function loadSource(url, { isAd = false, duration = 0, resumeAt = null } = {}) {
     if (hls) { try { hls.destroy(); } catch {} hls = null; }
+
+    // Once the video is ready, optionally seek to a resume position within the seekable range.
+    const seekWhenReady = () => {
+      if (resumeAt == null) return;
+      const trySeek = () => {
+        try {
+          const sk = video.seekable;
+          if (sk && sk.length) {
+            const start = sk.start(0);
+            const end   = sk.end(sk.length - 1);
+            // Clamp inside seekable range; if position is behind the DVR window, jump to earliest.
+            const target = Math.min(Math.max(resumeAt, start + 0.1), Math.max(end - 0.5, start + 0.1));
+            video.currentTime = target;
+          }
+        } catch {/* ignore */}
+        video.removeEventListener('loadedmetadata', trySeek);
+        video.removeEventListener('canplay', trySeek);
+      };
+      video.addEventListener('loadedmetadata', trySeek, { once: true });
+      video.addEventListener('canplay',        trySeek, { once: true });
+    };
+
     const isHls = /\.m3u8(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
-      hls = new Hls({ lowLatencyMode: true, backBufferLength: 30 });
+      hls = new Hls({ lowLatencyMode: true, backBufferLength: 60 });
       hls.loadSource(url);
       hls.attachMedia(video);
       hls.on(Hls.Events.ERROR, (_e, d) => {
-        if (d.fatal) setTimeout(() => loadSource(url, { isAd, duration }), 1500);
+        if (d.fatal) setTimeout(() => loadSource(url, { isAd, duration, resumeAt }), 1500);
       });
     } else {
       video.src = url;
     }
+    seekWhenReady();
     video.play().catch(() => {});
 
     if (isAd) {
@@ -67,11 +95,27 @@
     }
   }
 
-  function returnToLive() { if (liveUrl) loadSource(liveUrl, { isAd: false }); }
+  function savePosition() {
+    if (!isFinite(video.currentTime) || video.currentTime <= 0) return;
+    savedPosition = video.currentTime;
+    adStartedAt   = Date.now();
+  }
+
+  function returnToLive() {
+    if (!liveUrl) return;
+    // How long the ad actually kept the viewer away from live.
+    const adElapsed = adStartedAt ? (Date.now() - adStartedAt) / 1000 : 0;
+    // Advance the resume point by adElapsed → live "kept running" during the ad.
+    const resumeAt = (savedPosition != null) ? (savedPosition + adElapsed) : null;
+    savedPosition = null;
+    adStartedAt   = null;
+    loadSource(liveUrl, { isAd: false, resumeAt });
+  }
 
   function applyState(state) {
     if (!state) return;
     if (state.mode === 'ad' && state.adUrl) {
+      savePosition();
       const elapsed = Math.max(0, (Date.now() - (state.startAt || Date.now())) / 1000);
       const remaining = Math.max(1, (state.duration || 15) - elapsed);
       loadSource(state.adUrl, { isAd: true, duration: remaining });
@@ -82,6 +126,7 @@
 
   function handleCommand(msg) {
     if (msg.action === 'play_ad') {
+      savePosition();   // remember exact frame the live stream is on
       const elapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
       const remaining = Math.max(1, msg.duration - elapsed);
       loadSource(msg.adUrl, { isAd: true, duration: remaining });
