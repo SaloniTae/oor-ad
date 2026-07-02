@@ -18,6 +18,14 @@ const cfg = {
   adminCors:  (process.env.ADMIN_CORS || '').split(',').map(s => s.trim()).filter(Boolean),
   redisUrl:   process.env.REDIS_URL || '',
   logLevel:   process.env.LOG_LEVEL || 'info',
+  // Iframe embed control. Comma-separated list of origins allowed to embed
+  // the /player. Special values:
+  //   ""  or unset -> allow all origins (dev-friendly, use in local testing)
+  //   "*"          -> allow all origins (explicit)
+  //   "self"       -> same-origin only (production default when you don't
+  //                   embed anywhere)
+  //   "https://foo.com,https://bar.com" -> only these origins can iframe.
+  iframeOrigins: (process.env.IFRAME_ALLOW_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean),
 };
 
 if (!cfg.jwtSecret || cfg.jwtSecret.length < 32) {

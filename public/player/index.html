@@ -9,19 +9,24 @@
 </head>
 <body>
   <header>
-    <div class="brand">● LIVE</div>
+    <div class="brand">LIVE</div>
     <div id="status" class="status">connecting…</div>
   </header>
 
   <main>
     <div class="stage">
-      <video id="videoA" class="v active" playsinline autoplay muted preload="auto"></video>
-      <video id="videoB" class="v"        playsinline           muted preload="auto"></video>
-      <!-- image ad overlay -->
+      <!--
+        Fixed roles: videoA is ALWAYS the live stream (loaded once, never touched
+        again during ads). videoB is ONLY used for video ads. During any ad,
+        videoA keeps playing behind – muted – so the return-to-live is instant
+        with no reload and no restart-from-beginning.
+      -->
+      <video id="videoA" class="v v-live" playsinline autoplay muted preload="auto"></video>
+      <video id="videoB" class="v v-ad"   playsinline           muted preload="auto"></video>
       <a id="imgLink" class="img-layer hidden" target="_blank" rel="noopener">
         <img id="imgAd" alt="advertisement" />
       </a>
-      <div id="badge" class="badge hidden">AD • <span id="countdown">0</span>s</div>
+      <div id="badge" class="badge hidden">AD <span id="countdown">0</span>s</div>
       <div id="loading" class="loading hidden">Loading ad…</div>
     </div>
     <div class="controls">

@@ -49,8 +49,27 @@ app.use(cors({ origin: cfg.adminCors.length ? cfg.adminCors : true, credentials:
 app.use(express.json({ limit: '256kb' }));
 
 // static: admin UI + player + docs
+// Iframe embedding for /player is controlled by IFRAME_ALLOW_ORIGINS.
+// - unset / ""      -> allow all (dev / local testing – fixes X-Frame-Options
+//                      and CSP errors when you iframe from localhost)
+// - "*"             -> allow all (explicit)
+// - "self"          -> same-origin only
+// - comma list      -> only those origins can embed
+function frameEmbedMiddleware(req, res, next) {
+  const list = cfg.iframeOrigins;
+  // Always remove X-Frame-Options for /player so CSP (which is more expressive)
+  // is the source of truth. helmet() set SAMEORIGIN which blocks all cross-origin
+  // iframes and generates the errors you saw during localhost testing.
+  res.removeHeader('X-Frame-Options');
+  let ancestors;
+  if (list.length === 0 || list.includes('*'))       ancestors = "*";
+  else if (list.length === 1 && list[0] === 'self')  ancestors = "'self'";
+  else                                                ancestors = ["'self'", ...list].join(' ');
+  res.setHeader('Content-Security-Policy', `frame-ancestors ${ancestors}`);
+  next();
+}
+app.use('/player', frameEmbedMiddleware, express.static(path.join(__dirname, '..', '..', 'public', 'player')));
 app.use('/admin',  express.static(path.join(__dirname, '..', '..', 'public', 'admin')));
-app.use('/player', express.static(path.join(__dirname, '..', '..', 'public', 'player')));
 app.use('/docs',   express.static(path.join(__dirname, '..', '..', 'public', 'docs')));
 app.get('/', (_req, res) => res.redirect('/admin/'));
 

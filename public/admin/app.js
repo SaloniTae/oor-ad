@@ -228,7 +228,7 @@ async function openChannel(c, view) {
     h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:14px' },
       h('h1', {}, ch.name),
       h('div', { class: 'row' },
-        h('button', { onclick: () => openChannelForm(view, ch) }, 'Edit'),
+        h('button', { class: 'edit', onclick: () => openChannelForm(view, ch) }, 'Edit'),
         h('button', { class: 'danger', onclick: async () => {
           if (!confirm('Delete channel?')) return;
           await api('DELETE', `/v1/channels/${ch.id}`); nav('channels');
@@ -323,6 +323,7 @@ views.ads = async (view) => {
     a.is_upload ? h('span',{class:'muted'},'(uploaded file)') : h('span',{style:'word-break:break-all;font-size:12px'}, a.source),
     h('div', { class: 'row' },
       h('button', { class: 'small', onclick: () => previewAd(a) }, 'Preview'),
+      h('button', { class: 'small edit', onclick: () => openAdEdit(document.getElementById('view'), a) }, 'Edit'),
       h('button', { class: 'small danger', onclick: async () => { if(confirm('Delete ad?')){await api('DELETE',`/v1/ads/${a.id}`);nav('ads');} } }, 'Delete'),
     ),
   ])) : h('div', { class: 'card muted' }, 'No ads yet.'));
@@ -372,22 +373,43 @@ function openAdUpload(view) {
   ));
 }
 
+// Guess an ad's type from a URL. Extensions are the strongest hint;
+// query strings are stripped before checking.
+function detectAdTypeFromUrl(url) {
+  const clean = String(url || '').split('?')[0].split('#')[0].toLowerCase();
+  if (/\.m3u8$/.test(clean)) return 'hls';
+  if (/\.(png|jpe?g|webp|gif|avif|heic|heif|bmp)$/.test(clean)) return 'image';
+  if (/\.(mp4|webm|mov|mkv|m4v)$/.test(clean)) return 'video';
+  if (/(image|photo|picture)/.test(clean)) return 'image';   // fallback heuristic
+  return null;   // unknown -> let user pick
+}
+
 function openAdUrl(view) {
   view.innerHTML = '';
   const err = h('div', { class: 'err' });
+  const detectedTag = h('span', { class: 'pill', style: 'margin-left:8px' }, '');
   const f = {
-    name: h('input', {}),
+    name: h('input', { placeholder: 'Ad name' }),
     type: h('select', {}, h('option',{value:'hls'},'HLS (.m3u8)'), h('option',{value:'video'},'Video (mp4/webm)'), h('option',{value:'image'},'Image')),
-    source: h('input', { placeholder: 'https://...' }),
+    source: h('input', { placeholder: 'https://… (auto-detect from extension)' }),
     duration: h('input', { type: 'number', value: 15, min: 1, max: 600 }),
     click_url: h('input', { placeholder: 'https://example.com (optional)' }),
   };
+  let userOverrodeType = false;
+  f.type.addEventListener('change', () => { userOverrodeType = true; detectedTag.textContent = 'manual'; });
+  f.source.addEventListener('input', () => {
+    if (userOverrodeType) return;
+    const guess = detectAdTypeFromUrl(f.source.value);
+    if (guess) { f.type.value = guess; detectedTag.textContent = 'auto: ' + guess; }
+    else       { detectedTag.textContent = ''; }
+  });
   view.append(h('div', { class: 'wrap narrow' },
     h('h1', {}, 'Add ad by URL'),
     h('div', { class: 'card' },
       label('Name'), f.name,
-      label('Type'), f.type,
       label('Source URL'), f.source,
+      h('label', {}, 'Type ', detectedTag),
+      f.type,
       label('Duration (seconds)'), f.duration,
       label('Click-through URL (optional)'), f.click_url,
       h('button', { class: 'primary', onclick: async () => {
@@ -402,6 +424,48 @@ function openAdUrl(view) {
       err,
     ),
     h('button', { class: 'link', onclick: () => nav('ads') }, '← back'),
+  ));
+}
+
+
+function openAdEdit(view, ad) {
+  view.innerHTML = '';
+  const err = h('div', { class: 'err' });
+  const meta = ad.metadata || {};
+  const isUrl = !ad.is_upload;
+  const f = {
+    name: h('input', { value: ad.name }),
+    duration: h('input', { type: 'number', value: ad.duration_seconds, min: 1, max: 600 }),
+    click_url: h('input', { value: meta.click_url || '', placeholder: 'https://example.com (image ads)' }),
+    source: h('input', { value: ad.source, placeholder: 'https://…' }),
+  };
+  view.append(h('div', { class: 'wrap narrow' },
+    h('h1', {}, 'Edit ad'),
+    h('div', { class: 'card' },
+      label('Name'), f.name,
+      label('Duration (seconds)'), f.duration,
+      isUrl ? label('Source URL') : null,
+      isUrl ? f.source            : null,
+      label('Click-through URL'), f.click_url,
+      h('div', { class: 'muted', style: 'font-size:11px;margin-top:6px' }, isUrl ? 'URL-based ad. You can change the source.' : 'Uploaded file. Delete and re-upload to change bytes.'),
+      h('div', { class: 'row', style: 'margin-top:14px' },
+        h('button', { class: 'primary', onclick: async () => {
+          err.textContent = '';
+          try {
+            const body = {
+              name: f.name.value.trim(),
+              duration_seconds: Number(f.duration.value) || ad.duration_seconds,
+              metadata: f.click_url.value ? { ...meta, click_url: f.click_url.value } : (function(){ const m = {...meta}; delete m.click_url; return m; })(),
+            };
+            if (isUrl && f.source.value.trim()) body.source = f.source.value.trim();
+            await api('PATCH', `/v1/ads/${ad.id}`, body);
+            nav('ads');
+          } catch (e) { err.className = 'err'; err.textContent = e.message; }
+        }}, 'Save'),
+        h('button', { onclick: () => nav('ads') }, 'Cancel'),
+      ),
+      err,
+    ),
   ));
 }
 

@@ -125,6 +125,28 @@ r.get('/', (req, res) => {
 });
 r.get('/:id', ownAd, (req, res) => res.json({ ad: pub(req.ad) }));
 
+// ---- edit ad (name/duration/metadata/click_url) --------------------------
+const UpdateBody = z.object({
+  name: z.string().min(1).max(120).optional(),
+  duration_seconds: z.number().int().min(1).max(600).optional(),
+  metadata: z.record(z.any()).optional(),
+  source: z.string().url().optional(),        // only meaningful for URL-based ads
+});
+r.patch('/:id', ownAd, validate(UpdateBody), (req, res) => {
+  const b = req.body;
+  const sets = []; const vals = [];
+  if (b.name !== undefined)             { sets.push('name = ?');             vals.push(b.name); }
+  if (b.duration_seconds !== undefined) { sets.push('duration_seconds = ?'); vals.push(b.duration_seconds); }
+  if (b.metadata !== undefined)         { sets.push('metadata = ?');         vals.push(JSON.stringify(b.metadata)); }
+  if (b.source !== undefined && !req.ad.is_upload) { sets.push('source = ?'); vals.push(b.source); }
+  if (sets.length) {
+    vals.push(req.ad.id);
+    db.prepare(`UPDATE ads SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+  auth.audit({ tenantId: req.tenant.id, actor: req.apiKey?.id || 'session', action: 'ad.update', resource: req.ad.id, metadata: b, ip: req.ip });
+  res.json({ ad: pub(getAd.get(req.ad.id)) });
+});
+
 r.delete('/:id', ownAd, (req, res) => {
   db.prepare('DELETE FROM ads WHERE id = ?').run(req.ad.id);
   if (req.ad.is_upload) {

@@ -103,17 +103,23 @@ r.post('/:id/resume', (req, res, next) => {
   const channel = getChannel.get(req.params.id);
   if (!channel || channel.tenant_id !== req.tenant.id) return next(new HttpError(404, 'not_found', 'Channel not found'));
   const t = activeTrigger.get(channel.id);
-  if (t) {
-    setTriggerStatus.run('canceled', t.id);
-    const timer = timers.get(t.id);
-    if (timer) { clearTimeout(timer); timers.delete(t.id); }
+  // BUG FIX: only broadcast resume_live if there's actually an active ad.
+  // The old code broadcast unconditionally which caused every Resume click
+  // to reload the live stream from the beginning – super jarring.
+  if (!t) {
+    // Ensure server-side state matches reality but don't disturb viewers.
+    ws.setState(channel.id, { mode: 'live' });
+    return res.json({ ok: true, delivered: 0, canceled_trigger: null, note: 'no active ad' });
   }
+  setTriggerStatus.run('canceled', t.id);
+  const timer = timers.get(t.id);
+  if (timer) { clearTimeout(timer); timers.delete(t.id); }
   ws.setState(channel.id, { mode: 'live' });
-  const delivered = ws.broadcast(channel.id, { type: 'command', action: 'resume_live', ts: Date.now(), triggerId: t?.id });
+  const delivered = ws.broadcast(channel.id, { type: 'command', action: 'resume_live', ts: Date.now(), triggerId: t.id });
   auth.audit({ tenantId: req.tenant.id, actor: req.apiKey?.id || 'session', action: 'trigger.resume',
                resource: channel.id, ip: req.ip });
-  hooks.fire(req.tenant, 'ad.resumed', { channel_id: channel.id, trigger_id: t?.id, delivered });
-  res.json({ ok: true, delivered, canceled_trigger: t?.id || null });
+  hooks.fire(req.tenant, 'ad.resumed', { channel_id: channel.id, trigger_id: t.id, delivered });
+  res.json({ ok: true, delivered, canceled_trigger: t.id });
 });
 
 r.get('/:id/triggers', (req, res, next) => {

@@ -1,66 +1,92 @@
 /**
- * Ad Injection - viewer player (hardened build)
- * ------------------------------------------------------------------
- * Connects to /ws?channel=<slug>&token=<viewerJwt>. Token is issued by
- * POST /v1/channels/<id>/viewer-token.
+ * Ad Injection – viewer player (production build v3)
  *
- * Rendering strategy:
- *   - Two <video> elements are stacked. One is "front" (visible), one is "back"
- *     (invisible, used to preload the next source). We NEVER swap until the back
- *     video is truly ready (first frame decoded AND the requested seek has
- *     landed), so no blank frame is ever shown.
+ * Architecture (fixed roles, zero swaps):
+ *   videoA  = LIVE. Loaded once. Never destroyed, seeked, or reloaded during
+ *             ads. It just keeps playing (muted during ad breaks) behind the
+ *             ad layer, so returning to live is a pure visibility toggle –
+ *             no HLS.js state loss, no restart-from-beginning, no reload gap.
+ *   videoB  = AD video. Only used for video ads. Loaded when a video ad
+ *             starts, played on top of live via z-index, hidden + torn down
+ *             when the ad ends.
+ *   <img>   = IMAGE ad overlay. On top of everything, hidden by default.
  *
- *   - Video ads: back slot loads the ad, swap happens, then we resume live the
- *     same way (back preloads the live URL, seeks to catch-up point, swaps).
- *
- *   - Image ads: we DO NOT tear down the live video. We just pause the front
- *     slot and show an image overlay. When the ad ends we hide the overlay and
- *     resume the (still-loaded) live video. Live never has to reload -> no
- *     restart-from-zero, no re-buffer.
- *
- * Catch-up: on resume we seek to (savedPosition + adElapsed) so viewers don't
- * miss content, YouTube-live style. If the platform's HLS window is too short
- * to hold that position, we clamp to the live edge.
+ * Why this fixes every bug you saw:
+ *   - "Photo ad delays / freezes / then restarts from beginning"
+ *       -> the old code paused live and sometimes reloaded HLS after an
+ *          image ad. Now we never touch live. Image ads are pure overlays.
+ *   - "Video ad overlaps sometimes"
+ *       -> the old code cross-faded two <video>s at opacity ~50% for 140ms,
+ *          which visibly overlapped. Now we hard-switch visibility, no fade.
+ *   - "Video ad disappearing not synced with the timer / not smooth"
+ *       -> the old code reloaded live after the ad, so there was a 1-3s
+ *          gap between the countdown hitting 0 and live coming back. Now
+ *          live has been playing the whole time – swap-back is instant.
+ *   - "Resume button always restarts the stream"
+ *       -> server: no broadcast if no active ad. Client: no-op if already
+ *          live. And even when it does run, returnToLive() only toggles
+ *          visibility – it doesn't touch the live element.
  */
 (() => {
   const $ = (id) => document.getElementById(id);
-  const videoA = $('videoA'), videoB = $('videoB');
+  const liveEl = $('videoA');            // fixed role: LIVE
+  const adEl   = $('videoB');            // fixed role: AD (video ads only)
   const statusEl = $('status'), badge = $('badge'), cd = $('countdown');
   const modeEl = $('mode'), cidEl = $('cid'), chEl = $('ch');
   const imgLink = $('imgLink'), imgAd = $('imgAd'), loadingEl = $('loading');
-  const unmute = $('unmute');
+  const unmuteBtn = $('unmute');
 
-  // ---- config resolution ----
+  // ---- config resolution ---------------------------------------------------
   const qs = new URLSearchParams(location.search);
   const cfg = window.AD_INJECTION_CONFIG || {};
-  const wsUrl  = cfg.wsUrl  || qs.get('ws');
-  let   liveUrl = cfg.liveUrl || qs.get('live') || null;   // may be provided; also comes with welcome msg
+  const wsUrl   = cfg.wsUrl  || qs.get('ws');
+  let   liveUrl = cfg.liveUrl || qs.get('live') || null;
   if (!wsUrl) {
-    statusEl.textContent = 'missing ws url (?ws=...)'; statusEl.className = 'status err';
+    statusEl.textContent = 'missing ws url (?ws=…)'; statusEl.className = 'status err';
     return;
   }
 
-  const slots = { A: { el: videoA, hls: null }, B: { el: videoB, hls: null } };
-  let frontKey = 'A';
-  const front = () => slots[frontKey];
-
-  let adTimer = null, countdownTimer = null;
-  let savedPosition = null, adStartedAt = null;
-  let currentMode = 'live';
-  let currentTriggerId = null;
+  // ---- state ---------------------------------------------------------------
+  let liveHls = null;
+  let adHls   = null;
+  let adTimer = null;
+  let countdownTimer = null;
+  let currentMode = 'live';         // 'live' | 'ad'
+  let currentAdType = null;         // 'video' | 'hls' | 'image' | null
   let currentAdId = null;
-  let currentAdType = null;      // 'video' | 'hls' | 'image' | null
-  let currentSwapToken = 0;      // increments per playAd/returnToLive; cancels stale swaps
+  let currentTriggerId = null;
+  let currentToken = 0;             // increments per ad dispatch; cancels stale operations
+  let userWantsSound = false;       // set true when the user clicks unmute at least once
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  unmute.onclick = () => {
-    [videoA, videoB].forEach(v => { v.muted = false; v.volume = 1; });
-    front().el.play().catch(()=>{});
-    unmute.textContent = '🔊 Sound on';
+  // ---- audio / unmute button ------------------------------------------------
+  // Only ONE element ever produces audio at a time: whichever is on top.
+  // During an image ad, live is muted (image ads have no audio anyway).
+  // During a video ad, live is muted, ad video honors the user's preference.
+  function applyAudioState() {
+    if (currentMode === 'ad' && currentAdType === 'image') {
+      liveEl.muted = true;
+      adEl.muted   = true;
+    } else if (currentMode === 'ad') {   // video ad
+      liveEl.muted = true;
+      adEl.muted   = !userWantsSound;
+    } else {                              // live
+      liveEl.muted = !userWantsSound;
+      adEl.muted   = true;
+    }
+  }
+  unmuteBtn.onclick = () => {
+    userWantsSound = !userWantsSound;
+    unmuteBtn.textContent = userWantsSound ? '🔈 Mute' : '🔊 Unmute';
+    applyAudioState();
+    // Kick playback on the currently-audible element so audio actually starts.
+    const audible = (currentMode === 'ad' && currentAdType !== 'image') ? adEl : liveEl;
+    audible.play().catch(() => {});
   };
 
+  // ---- HLS ------------------------------------------------------------------
   function newHlsConfig() {
     return {
       lowLatencyMode: true, startFragPrefetch: true,
@@ -70,148 +96,72 @@
       autoStartLoad: true,
     };
   }
-  function destroySlot(key) {
-    const s = slots[key];
-    if (s.hls) { try { s.hls.destroy(); } catch {} s.hls = null; }
-    try { s.el.pause(); } catch {}
-  }
 
-  /**
-   * Try to seek the given media element to `target` seconds.
-   * Waits until seekable ranges include (or can be clamped to) the target,
-   * then triggers `onDone` when the seek has actually landed (or after a
-   * bounded timeout). Never leaves us on frame 0.
-   */
-  function seekWhenReady(el, target, onDone, opts = {}) {
-    const { maxWaitMs = 2500 } = opts;
-    const started = Date.now();
-
-    const trySeek = () => {
-      let sk;
-      try { sk = el.seekable; } catch { sk = null; }
-      if (sk && sk.length) {
-        const start = sk.start(0), end = sk.end(sk.length - 1);
-        // Clamp inside a safe window. If target is past the end (live catch-up
-        // beyond DVR window), pin to live edge instead of frame 0.
-        const safeTarget = Math.min(
-          Math.max(target, start + 0.1),
-          Math.max(end - 0.5, start + 0.1)
-        );
-        // If the current time is already close enough, no seek needed.
-        if (Math.abs((el.currentTime || 0) - safeTarget) < 0.25) return onDone();
-
-        const onSeeked = () => { el.removeEventListener('seeked', onSeeked); onDone(); };
-        el.addEventListener('seeked', onSeeked, { once: true });
-        try { el.currentTime = safeTarget; } catch { /* fallthrough to timeout */ }
-        // Safety: `seeked` should fire in <500ms; if not, continue anyway.
-        setTimeout(() => { el.removeEventListener('seeked', onSeeked); onDone(); }, 900);
-        return;
-      }
-      // Seekable not populated yet; retry until timeout, then give up gracefully.
-      if (Date.now() - started > maxWaitMs) return onDone();
-      // Any of these events indicates seekable may have grown.
-      const retry = () => { cleanup(); trySeek(); };
-      const cleanup = () => {
-        el.removeEventListener('progress', retry);
-        el.removeEventListener('loadedmetadata', retry);
-        el.removeEventListener('durationchange', retry);
-        el.removeEventListener('canplaythrough', retry);
-        clearTimeout(fallbackT);
-      };
-      el.addEventListener('progress', retry, { once: true });
-      el.addEventListener('loadedmetadata', retry, { once: true });
-      el.addEventListener('durationchange', retry, { once: true });
-      el.addEventListener('canplaythrough', retry, { once: true });
-      const fallbackT = setTimeout(retry, 200);   // poll every ~200ms if events are quiet
-    };
-    trySeek();
-  }
-
-  /**
-   * Load `url` on the BACK slot; swap to front only when the frame is ready
-   * AND (if requested) the seek has landed. Guaranteed not to expose a blank
-   * back slot.
-   */
-  function loadOnBackAndSwap(url, { resumeAt = null, token } = {}) {
-    return new Promise((resolve) => {
-      const key = frontKey === 'A' ? 'B' : 'A';
-      const s = slots[key];
-      destroySlot(key);
-      s.el.removeAttribute('src'); try { s.el.load(); } catch {}
-
-      let swapped = false;
-      const doSwap = () => {
-        if (swapped) return;
-        // Stale swap (a newer command replaced us). Abandon quietly.
-        if (token != null && token !== currentSwapToken) { swapped = true; resolve(); return; }
-        // Must have at least one decoded frame available before we swap.
-        if (s.el.readyState < 2) { setTimeout(doSwap, 60); return; }
-        swapped = true;
-
-        const finalize = () => {
-          slots[key].el.classList.add('active');
-          slots[frontKey].el.classList.remove('active');
-          const oldFront = frontKey; frontKey = key;
-          setTimeout(() => destroySlot(oldFront), 220);
-          resolve();
-        };
-        const p = s.el.play();
-        if (p && p.then) p.then(finalize, finalize); else finalize();
-      };
-
-      const onReady = () => {
-        s.el.removeEventListener('loadeddata', onReady);
-        s.el.removeEventListener('canplay',    onReady);
-        if (resumeAt != null) {
-          seekWhenReady(s.el, resumeAt, doSwap, { maxWaitMs: 2500 });
-        } else {
-          doSwap();
+  function loadLive() {
+    if (!liveUrl) return;
+    if (liveHls) { try { liveHls.destroy(); } catch {} liveHls = null; }
+    try { liveEl.pause(); } catch {}
+    liveEl.removeAttribute('src'); try { liveEl.load(); } catch {}
+    const isHls = /\.m3u8(\?|$)/i.test(liveUrl);
+    if (isHls && window.Hls && Hls.isSupported()) {
+      liveHls = new Hls(newHlsConfig());
+      liveHls.attachMedia(liveEl);
+      liveHls.on(Hls.Events.MEDIA_ATTACHED, () => liveHls.loadSource(liveUrl));
+      liveHls.on(Hls.Events.ERROR, (_e, d) => {
+        if (!d.fatal) return;
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) liveHls.startLoad();
+        else if (d.type === Hls.ErrorTypes.MEDIA_ATTACH_ERROR || d.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          try { liveHls.recoverMediaError(); } catch {}
         }
-      };
-      s.el.addEventListener('loadeddata', onReady, { once: true });
-      s.el.addEventListener('canplay',    onReady, { once: true });
-
-      // Last-resort safety. Only swap if the back slot actually has a frame;
-      // otherwise keep the current front on screen (no blank flash).
-      const HARD_LIMIT_MS = 8000;
-      const t0 = Date.now();
-      (function guard() {
-        if (swapped) return;
-        if (s.el.readyState >= 2) { onReady(); return; }
-        if (Date.now() - t0 > HARD_LIMIT_MS) {
-          // Give up on this swap; leave current front in place.
-          swapped = true;
-          if (token == null || token === currentSwapToken) {
-            // Don't tear down front. Just destroy the failed back attempt.
-            destroySlot(key);
-          }
-          resolve();
-          return;
-        }
-        setTimeout(guard, 200);
-      })();
-
-      const isHls = /\.m3u8(\?|$)/i.test(url);
-      if (isHls && window.Hls && Hls.isSupported()) {
-        s.hls = new Hls(newHlsConfig());
-        s.hls.attachMedia(s.el);
-        s.hls.on(Hls.Events.MEDIA_ATTACHED, () => s.hls.loadSource(url));
-        s.hls.on(Hls.Events.ERROR, (_e, d) => {
-          if (!d.fatal) return;
-          if (d.type === Hls.ErrorTypes.NETWORK_ERROR) s.hls.startLoad();
-          else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) s.hls.recoverMediaError();
-        });
-      } else {
-        s.el.src = url;
-        try { s.el.load(); } catch {}
-      }
-    });
+      });
+    } else {
+      liveEl.src = liveUrl;
+      try { liveEl.load(); } catch {}
+    }
+    applyAudioState();
+    liveEl.play().catch(() => {});
   }
 
-  // ---- badge / countdown / loading indicator --------------------------------
+  function loadAdVideo(url, onReady) {
+    if (adHls) { try { adHls.destroy(); } catch {} adHls = null; }
+    try { adEl.pause(); } catch {}
+    adEl.removeAttribute('src'); try { adEl.load(); } catch {}
+    const finishOnce = (() => {
+      let called = false;
+      return () => { if (called) return; called = true; onReady(); };
+    })();
+    const onReadyEvent = () => finishOnce();
+    adEl.addEventListener('canplay',     onReadyEvent, { once: true });
+    adEl.addEventListener('loadeddata',  onReadyEvent, { once: true });
+    // Safety: if the network stalls, don't hang forever.
+    setTimeout(() => finishOnce(), 5000);
+
+    const isHls = /\.m3u8(\?|$)/i.test(url);
+    if (isHls && window.Hls && Hls.isSupported()) {
+      adHls = new Hls(newHlsConfig());
+      adHls.attachMedia(adEl);
+      adHls.on(Hls.Events.MEDIA_ATTACHED, () => adHls.loadSource(url));
+      adHls.on(Hls.Events.ERROR, (_e, d) => {
+        if (!d.fatal) return;
+        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) adHls.startLoad();
+        else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) { try { adHls.recoverMediaError(); } catch {} }
+      });
+    } else {
+      adEl.src = url;
+      try { adEl.load(); } catch {}
+    }
+  }
+
+  function unloadAdVideo() {
+    if (adHls) { try { adHls.destroy(); } catch {} adHls = null; }
+    try { adEl.pause(); } catch {}
+    adEl.removeAttribute('src'); try { adEl.load(); } catch {}
+  }
+
+  // ---- UI helpers -----------------------------------------------------------
   function showBadgeAndCountdown(duration) {
     badge.classList.remove('hidden');
-    void badge.offsetWidth;                  // force reflow so transition triggers
+    void badge.offsetWidth;
     badge.classList.add('show');
     let remaining = Math.ceil(duration);
     cd.textContent = remaining;
@@ -223,118 +173,120 @@
   }
   function hideBadge() {
     badge.classList.remove('show');
-    setTimeout(() => badge.classList.add('hidden'), 200);
+    setTimeout(() => badge.classList.add('hidden'), 180);
     clearInterval(countdownTimer);
   }
-  function showLoading()  { loadingEl && loadingEl.classList.remove('hidden'); }
-  function hideLoading()  { loadingEl && loadingEl.classList.add('hidden'); }
+  function showLoading() { loadingEl && loadingEl.classList.remove('hidden'); }
+  function hideLoading() { loadingEl && loadingEl.classList.add('hidden'); }
 
-  function savePosition() {
-    const t = front().el.currentTime;
-    if (isFinite(t) && t > 0) { savedPosition = t; adStartedAt = Date.now(); }
-    else                       { savedPosition = null; adStartedAt = Date.now(); }
+  function showAdVideoLayer() { adEl.classList.add('on'); }
+  function hideAdVideoLayer() { adEl.classList.remove('on'); }
+  function showImageLayer(clickUrl) {
+    if (clickUrl) imgLink.setAttribute('href', clickUrl);
+    else          imgLink.removeAttribute('href');
+    imgLink.classList.remove('hidden');
+  }
+  function hideImageLayer() {
+    imgLink.classList.add('hidden');
+    imgAd.removeAttribute('src');
+    imgAd.onload = null; imgAd.onerror = null;
   }
 
   // ---- ad flows -------------------------------------------------------------
-  async function playVideoAd(adUrl, duration) {
-    const myToken = ++currentSwapToken;
-    savePosition();
+  function playVideoAd(adUrl, duration) {
+    const myToken = ++currentToken;
+    // Clear any leftover image overlay from a prior image ad.
+    hideImageLayer();
     setMode('ad');
+    // Note: currentAdType is set by dispatchAd BEFORE calling us.
     showLoading();
-    // Load ad on hidden slot; badge/countdown appear only AFTER the ad frame lands.
-    await loadOnBackAndSwap(adUrl, { token: myToken });
-    if (myToken !== currentSwapToken) return;    // superseded by another command
-    hideLoading();
-    showBadgeAndCountdown(duration);
-    reportEvent('ad.impression');
+    loadAdVideo(adUrl, () => {
+      if (myToken !== currentToken) return;   // superseded
+      hideLoading();
+      applyAudioState();
+      showAdVideoLayer();
+      adEl.play().catch(() => {});
+      showBadgeAndCountdown(duration);
+      reportEvent('ad.impression');
+    });
     clearTimeout(adTimer);
-    adTimer = setTimeout(returnToLive, duration * 1000);
+    adTimer = setTimeout(() => {
+      if (myToken === currentToken) returnToLive();
+    }, duration * 1000);
   }
 
   function playImageAd(imgUrl, duration, meta) {
-    ++currentSwapToken;                          // any in-flight video swap becomes stale
-    savePosition();
+    const myToken = ++currentToken;
+    // Ensure any video ad layer from a prior trigger is torn down.
+    hideAdVideoLayer();
+    unloadAdVideo();
     setMode('ad');
-    hideLoading();
-    // Keep live decoded in the front slot -- just pause it. The overlay hides
-    // it visually; when the ad ends we simply un-pause. No reload, no restart.
-    try { front().el.pause(); } catch {}
-    // Preload with hidden <img> first, then swap so we never flash a broken image.
-    const pre = new Image();
-    pre.onload = pre.onerror = () => {
-      imgAd.src = imgUrl;
-      if (meta && meta.click_url) imgLink.setAttribute('href', meta.click_url);
-      else                        imgLink.removeAttribute('href');
-      imgLink.classList.remove('hidden');
+    showLoading();
+    applyAudioState();     // mutes live so the image ad plays in silence
+
+    const clickUrl = meta && meta.click_url ? meta.click_url : null;
+    const reveal = () => {
+      if (myToken !== currentToken) return;
+      hideLoading();
+      showImageLayer(clickUrl);
       showBadgeAndCountdown(duration);
+      reportEvent('ad.impression');
     };
-    pre.src = imgUrl;
-    reportEvent('ad.impression');
+
+    imgAd.onload  = reveal;
+    imgAd.onerror = () => {
+      if (myToken !== currentToken) return;
+      // Fail-graceful: still run the countdown so the ad break isn't lost.
+      hideLoading();
+      showBadgeAndCountdown(duration);
+      reportEvent('ad.impression');
+    };
+    imgAd.src = imgUrl;
+    // If cached, onload may not fire – check `complete` manually.
+    if (imgAd.complete && imgAd.naturalWidth > 0) reveal();
+
     clearTimeout(adTimer);
-    adTimer = setTimeout(returnToLive, duration * 1000);
+    adTimer = setTimeout(() => {
+      if (myToken === currentToken) returnToLive();
+    }, duration * 1000);
   }
 
-  async function returnToLive() {
-    hideBadge();
-    hideLoading();
-    clearTimeout(adTimer);
-    const wasImageAd = (currentAdType === 'image');
-    currentAdType = null;
-    currentTriggerId = null; currentAdId = null;
-    setMode('live');
-    reportEvent('ad.complete');
-
-    // IMAGE AD PATH: live was only paused. Just resume it and hide the overlay.
-    if (wasImageAd) {
-      imgLink.classList.add('hidden');
-      imgAd.removeAttribute('src');
-      const el = front().el;
-      const adElapsed = adStartedAt ? (Date.now() - adStartedAt) / 1000 : 0;
-      const target = (savedPosition != null) ? (savedPosition + adElapsed) : null;
-      savedPosition = null; adStartedAt = null;
-      // Catch up to where live would be now, if we can. If seekable is behind
-      // (short DVR window), we'll be clamped to live edge automatically.
-      if (target != null) seekWhenReady(el, target, () => {}, { maxWaitMs: 1500 });
-      try { await el.play(); } catch {}
+  function returnToLive() {
+    clearTimeout(adTimer); adTimer = null;
+    // No-op if we're already live and there's no ad UI up. This is what
+    // makes the Resume button safe to spam without ever restarting the stream.
+    if (currentMode === 'live' && !currentAdType) {
+      hideBadge(); hideLoading(); hideAdVideoLayer(); hideImageLayer();
       return;
     }
-
-    // VIDEO AD PATH: reload live on the back slot and swap to it.
-    if (!liveUrl) return;
-    imgLink.classList.add('hidden');
-    imgAd.removeAttribute('src');
-    const myToken = ++currentSwapToken;
-    const adElapsed = adStartedAt ? (Date.now() - adStartedAt) / 1000 : 0;
-    const resumeAt = (savedPosition != null) ? (savedPosition + adElapsed) : null;
-    savedPosition = null; adStartedAt = null;
-    await loadOnBackAndSwap(liveUrl, { resumeAt, token: myToken });
+    const wasVideoAd = (currentAdType === 'video' || currentAdType === 'hls');
+    currentAdType = null; currentAdId = null; currentTriggerId = null;
+    setMode('live');
+    hideBadge();
+    hideLoading();
+    hideImageLayer();
+    hideAdVideoLayer();
+    if (wasVideoAd) unloadAdVideo();
+    // Live has been running the whole time. Just make sure it's audible
+    // per the user's preference and playing.
+    applyAudioState();
+    liveEl.play().catch(() => {});
+    reportEvent('ad.complete');
   }
 
-  async function initialLoad() {
-    if (!liveUrl) return;
-    const s = front();
-    destroySlot(frontKey);
-    const isHls = /\.m3u8(\?|$)/i.test(liveUrl);
-    if (isHls && window.Hls && Hls.isSupported()) {
-      s.hls = new Hls(newHlsConfig());
-      s.hls.attachMedia(s.el);
-      s.hls.on(Hls.Events.MEDIA_ATTACHED, () => s.hls.loadSource(liveUrl));
-      s.hls.on(Hls.Events.ERROR, (_e, d) => {
-        if (!d.fatal) return;
-        if (d.type === Hls.ErrorTypes.NETWORK_ERROR) s.hls.startLoad();
-        else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) s.hls.recoverMediaError();
-      });
-    } else {
-      s.el.src = liveUrl;
-      try { s.el.load(); } catch {}
-    }
-    s.el.play().catch(()=>{});
+  // ---- command dispatch -----------------------------------------------------
+  function inferAdType(msg) {
+    if (msg.adType) return msg.adType;
+    const u = String(msg.adUrl || '').split('?')[0].split('#')[0].toLowerCase();
+    if (/\.m3u8$/.test(u)) return 'hls';
+    if (/\.(png|jpe?g|webp|gif|avif|heic|heif|bmp)$/.test(u)) return 'image';
+    return 'video';
   }
 
   function dispatchAd(msg) {
     currentTriggerId = msg.triggerId; currentAdId = msg.adId;
-    currentAdType   = msg.adType || (/(png|jpe?g|webp|gif)($|\?)/i.test(msg.adUrl || '') ? 'image' : 'video');
-    const elapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
+    currentAdType   = inferAdType(msg);
+    const elapsed   = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
     const remaining = Math.max(1, (msg.duration || 15) - elapsed);
     if (currentAdType === 'image') return playImageAd(msg.adUrl, remaining, msg.metadata);
     return playVideoAd(msg.adUrl, remaining);
@@ -357,14 +309,14 @@
     else if (msg.action === 'resume_live') returnToLive();
   }
 
-  // ---- analytics event reporting to the server (via WS) --------------------
+  // ---- analytics ------------------------------------------------------------
   let socket = null;
   function reportEvent(name, meta) {
     if (!socket || socket.readyState !== 1) return;
     try { socket.send(JSON.stringify({ type: 'event', name, adId: currentAdId, triggerId: currentTriggerId, meta })); } catch {}
   }
 
-  // ---- WebSocket w/ exponential backoff ------------------------------------
+  // ---- WebSocket ------------------------------------------------------------
   let backoff = 500;
   function connect() {
     setStatus('connecting…');
@@ -381,7 +333,7 @@
           chEl.textContent = m.channel.slug;
           liveUrl = liveUrl || m.channel.liveUrl;
         }
-        if (liveUrl && !front().hls && !front().el.src) initialLoad();
+        if (liveUrl && !liveHls && !liveEl.src) loadLive();
       } else if (m.type === 'state')   applyState(m.state);
       else if (m.type === 'command') handleCommand(m);
     };
