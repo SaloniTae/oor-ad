@@ -1,0 +1,137 @@
+const express = require('express');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const multer = require('multer');
+const { z } = require('zod');
+const cfg = require('../config');
+const db = require('../db');
+const auth = require('../auth');
+const { HttpError, validate, requireAuth } = require('../middleware');
+
+const r = express.Router();
+r.use(requireAuth);
+
+// ---- upload storage --------------------------------------------------------
+const storage = multer.diskStorage({
+  destination: (req, _f, cb) => {
+    const dir = path.join(cfg.uploadDir, req.tenant.id);
+    fs.mkdirSync(dir, { recursive: true });
+    cb(null, dir);
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase().replace(/[^a-z0-9.]/g, '').slice(0, 12);
+    cb(null, `${crypto.randomBytes(10).toString('hex')}${ext}`);
+  },
+});
+const ALLOWED = new Set([
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska',
+  'application/vnd.apple.mpegurl', 'application/x-mpegurl',
+  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+]);
+const upload = multer({
+  storage,
+  limits: { fileSize: cfg.maxUploadMb * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, cb) => {
+    if (!ALLOWED.has(file.mimetype)) return cb(new HttpError(400, 'bad_mime', `Unsupported type: ${file.mimetype}`));
+    cb(null, true);
+  },
+});
+
+function detectTypeFromMime(m) {
+  if (m.startsWith('image/')) return 'image';
+  if (m.includes('mpegurl'))  return 'hls';
+  return 'video';
+}
+
+// ---- upload endpoint (multipart) ------------------------------------------
+r.post('/upload', upload.single('file'), (req, res, next) => {
+  if (!req.file) return next(new HttpError(400, 'no_file', 'file field required'));
+  const name = (req.body.name || req.file.originalname).slice(0, 120);
+  const duration = Math.max(1, Math.min(600, Number(req.body.duration_seconds) || 15));
+  const type = detectTypeFromMime(req.file.mimetype);
+  const meta = {};
+  if (req.body.click_url) meta.click_url = String(req.body.click_url).slice(0, 500);
+  if (req.body.alt_text)  meta.alt_text  = String(req.body.alt_text).slice(0, 200);
+
+  const id = auth.id();
+  const rel = path.relative(cfg.uploadDir, req.file.path);
+  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.tenant.id, name, type, rel, 1, duration, JSON.stringify(meta), auth.now());
+  auth.audit({ tenantId: req.tenant.id, actor: req.apiKey?.id || 'session', action: 'ad.upload', resource: id, ip: req.ip });
+  res.status(201).json({ ad: pub(getAd.get(id)) });
+});
+
+// ---- URL-based ad (no upload) ---------------------------------------------
+const CreateBody = z.object({
+  name: z.string().min(1).max(120),
+  type: z.enum(['video', 'hls', 'image']),
+  source: z.string().url(),
+  duration_seconds: z.number().int().min(1).max(600),
+  metadata: z.record(z.any()).optional(),
+});
+r.post('/', validate(CreateBody), (req, res) => {
+  const b = req.body;
+  const id = auth.id();
+  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.tenant.id, b.name, b.type, b.source, 0, b.duration_seconds,
+         JSON.stringify(b.metadata || {}), auth.now());
+  res.status(201).json({ ad: pub(getAd.get(id)) });
+});
+
+const getAd = db.prepare('SELECT * FROM ads WHERE id = ?');
+const listAds = db.prepare('SELECT * FROM ads WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?');
+
+r.get('/', (req, res) => {
+  const limit  = Math.min(200, Number(req.query.limit)  || 50);
+  const offset = Math.max(0,   Number(req.query.offset) || 0);
+  const rows = listAds.all(req.tenant.id, limit, offset).map(pub);
+  res.json({ ads: rows, limit, offset });
+});
+r.get('/:id', ownAd, (req, res) => res.json({ ad: pub(req.ad) }));
+
+r.delete('/:id', ownAd, (req, res) => {
+  db.prepare('DELETE FROM ads WHERE id = ?').run(req.ad.id);
+  if (req.ad.is_upload) {
+    const p = path.join(cfg.uploadDir, req.ad.source);
+    fs.unlink(p, () => {});
+  }
+  auth.audit({ tenantId: req.tenant.id, actor: req.apiKey?.id || 'session', action: 'ad.delete', resource: req.ad.id, ip: req.ip });
+  res.json({ ok: true });
+});
+
+// ---- asset serving (for uploaded files) ----------------------------------
+// Uses a short-lived signed URL so ad files aren't exposed publicly by ID guessing.
+r.get('/:id/signed-url', ownAd, (req, res) => {
+  if (!req.ad.is_upload) return res.json({ url: req.ad.source, type: req.ad.type });
+  const jwt = require('jsonwebtoken');
+  const token = jwt.sign({ typ: 'asset', ad: req.ad.id }, cfg.jwtSecret, { expiresIn: 3600 });
+  res.json({ url: `${cfg.publicUrl}/v1/ads/${req.ad.id}/asset?token=${token}`, type: req.ad.type });
+});
+
+// Public asset endpoint - validates the signed token.
+const publicRouter = express.Router();
+publicRouter.get('/:id/asset', (req, res, next) => {
+  const jwt = require('jsonwebtoken');
+  let p; try { p = jwt.verify(req.query.token || '', cfg.jwtSecret); } catch { return next(new HttpError(401, 'bad_token', 'Invalid or expired asset token')); }
+  if (p.typ !== 'asset' || p.ad !== req.params.id) return next(new HttpError(401, 'bad_token', 'Token mismatch'));
+  const ad = getAd.get(req.params.id);
+  if (!ad || !ad.is_upload) return next(new HttpError(404, 'not_found', 'Asset not found'));
+  const full = path.join(cfg.uploadDir, ad.source);
+  if (!full.startsWith(cfg.uploadDir)) return next(new HttpError(400, 'bad_path', 'Bad path'));
+  res.sendFile(full);
+});
+
+function pub(a) { return { ...a, metadata: JSON.parse(a.metadata || '{}'), is_upload: !!a.is_upload }; }
+function ownAd(req, _res, next) {
+  const a = getAd.get(req.params.id);
+  if (!a || a.tenant_id !== req.tenant.id) return next(new HttpError(404, 'not_found', 'Ad not found'));
+  req.ad = a; next();
+}
+
+module.exports = r;
+module.exports.publicAssets = publicRouter;
+module.exports.getAd = getAd;
+module.exports.pubAd = pub;

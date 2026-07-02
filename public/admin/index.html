@@ -3,44 +3,54 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Ad Injection • Admin</title>
+<title>Ad Injection - Admin</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="wrap">
-    <h1>Ad Injection Control</h1>
+<div id="app"></div>
 
-    <section class="card">
-      <label>Admin Token</label>
-      <input id="token" type="password" placeholder="paste ADMIN_TOKEN" />
-      <div class="row">
-        <button id="save">Save token (this browser)</button>
-        <span id="tokenState" class="muted">not set</span>
-      </div>
+<template id="tpl-auth">
+  <div class="wrap narrow">
+    <h1>Ad Injection</h1>
+    <div class="tabs">
+      <button data-tab="login" class="active">Login</button>
+      <button data-tab="register">Register</button>
+    </div>
+    <section class="card" data-view="login">
+      <label>Email</label><input type="email" name="email" autocomplete="email" />
+      <label>Password</label><input type="password" name="password" autocomplete="current-password" />
+      <button class="primary" data-act="login">Log in</button>
+      <div class="err" data-err></div>
     </section>
-
-    <section class="card">
-      <label>Ad URL (HLS .m3u8 or MP4)</label>
-      <input id="adUrl" placeholder="https://.../ad.m3u8" value="https://test-streams.mux.dev/pts_shift/master.m3u8" />
-      <label>Duration (seconds)</label>
-      <input id="duration" type="number" min="1" max="600" value="15" />
-      <div class="row">
-        <button id="trigger" class="primary">▶ Trigger Ad Now</button>
-        <button id="resume">■ Resume Live</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <h3>Server status</h3>
-      <pre id="stats">–</pre>
-      <button id="refresh">Refresh</button>
-    </section>
-
-    <section class="card">
-      <h3>Log</h3>
-      <pre id="log"></pre>
+    <section class="card hidden" data-view="register">
+      <label>Organization name</label><input name="name" />
+      <label>Email</label><input type="email" name="email" />
+      <label>Password (8+ chars)</label><input type="password" name="password" minlength="8" />
+      <button class="primary" data-act="register">Create account</button>
+      <div class="err" data-err></div>
     </section>
   </div>
-  <script src="app.js"></script>
+</template>
+
+<template id="tpl-dash">
+  <header class="top">
+    <div class="brand">Ad Injection</div>
+    <nav>
+      <a data-nav="overview" class="active">Overview</a>
+      <a data-nav="channels">Channels</a>
+      <a data-nav="ads">Ad Library</a>
+      <a data-nav="events">Events</a>
+      <a data-nav="keys">API Keys</a>
+      <a data-nav="settings">Settings</a>
+      <a data-nav="platform" data-admin class="hidden admin-tab">Platform</a>
+      <a data-nav="audit"    data-admin class="hidden admin-tab">Audit</a>
+      <a data-nav="docs" href="/docs/" target="_blank">API Docs</a>
+    </nav>
+    <div class="who"><span data-who></span> · <button data-act="logout" class="link">Log out</button></div>
+  </header>
+  <main id="view"></main>
+</template>
+
+<script src="app.js"></script>
 </body>
 </html>

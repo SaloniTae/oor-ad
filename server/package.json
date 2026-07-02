@@ -1,20 +1,26 @@
 {
   "name": "ad-injection-server",
-  "version": "1.0.0",
-  "description": "Production-grade remote ad injection over WebSocket with Redis pub/sub",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Multi-tenant ad injection platform - API + WebSocket + admin UI",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
   },
   "dependencies": {
-    "ws": "^8.18.0",
-    "ioredis": "^5.4.1",
-    "express": "^4.21.1",
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.3.0",
     "cors": "^2.8.5",
-    "helmet": "^8.0.0",
     "dotenv": "^16.4.5",
-    "pino": "^9.5.0"
+    "express": "^4.21.1",
+    "helmet": "^8.0.0",
+    "ioredis": "^5.4.1",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.2.0",
+    "pino": "^9.5.0",
+    "pino-http": "^10.3.0",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
   },
   "engines": {
     "node": ">=20"

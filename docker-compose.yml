@@ -1,44 +1,25 @@
-# Isolated VPS test setup - does NOT touch your host Redis or Nginx.
-# - Uses its OWN Redis container on an internal Docker network (no host port bind)
-# - Node app exposes ONLY ports 6778/6779/6780 (change if they collide)
-# - Everything lives under this compose project. `docker compose down -v` removes all traces.
-
+# Isolated test stack. Does not touch host Redis, Nginx, or system files.
 services:
-  redis:
-    image: redis:7-alpine
-    container_name: adinj-redis
-    restart: unless-stopped
-    # NO host port binding - reachable only by the app container via the internal network.
-    networks: [adinj]
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
-
   app:
     build: .
     container_name: adinj-app
     restart: unless-stopped
-    depends_on: [redis]
     environment:
       NODE_ENV: production
-      REDIS_URL: redis://redis:6379
-      WS_PORT: 6778
-      ADMIN_PORT: 6779
-      STATIC_PORT: 6780
-      ADMIN_TOKEN: ${ADMIN_TOKEN:?set ADMIN_TOKEN in .env}
-      LIVE_HLS_URL: ${LIVE_HLS_URL:-https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8}
-      CLUSTER_WORKERS: ${CLUSTER_WORKERS:-2}
+      PORT: 7860
+      PUBLIC_URL: ${PUBLIC_URL:-http://localhost:7860}
+      JWT_SECRET: ${JWT_SECRET:?generate a 32+ char random string}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      RATE_LIMIT_RPM: ${RATE_LIMIT_RPM:-120}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-200}
       LOG_LEVEL: info
+    volumes:
+      - adinj-data:/app/data
     ports:
-      - "6778:6778"   # WebSocket (viewers)
-      - "6779:6779"   # Admin API
-      - "6780:6780"   # Static UI (player + admin)
-    # Run the CLUSTERED build (Redis pub/sub) instead of the single-port default.
-    command: ["node", "server/index.js"]
+      - "6780:7860"      # host:container - change host port if 6780 is busy
     ulimits:
-      nofile:
-        soft: 200000
-        hard: 200000
-    networks: [adinj]
+      nofile: { soft: 200000, hard: 200000 }
 
-networks:
-  adinj:
-    driver: bridge
+volumes:
+  adinj-data:

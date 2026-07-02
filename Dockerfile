@@ -1,26 +1,24 @@
-# Multi-purpose Dockerfile
-# - Default CMD runs single.js (HF Spaces / Render / free hosts / smoke tests)
-# - docker-compose.yml overrides CMD to run index.js (clustered + Redis) on VPS
 FROM node:20-alpine
+RUN apk add --no-cache python3 make g++ && rm -rf /var/cache/apk/*
 WORKDIR /app
 
-# Install deps first for better caching.
 COPY server/package.json server/package.json
 WORKDIR /app/server
-RUN npm install --omit=dev && npm cache clean --force
+RUN npm install --omit=dev --build-from-source && npm cache clean --force
 
-# Copy the rest.
 WORKDIR /app
 COPY server ./server
 COPY public ./public
 
-# HF Spaces default port; docker-compose overrides via env.
 ENV PORT=7860
-EXPOSE 7860 6778 6779 6780
+ENV DATA_DIR=/app/data
+ENV DB_FILE=/app/data/app.db
+ENV UPLOAD_DIR=/app/data/uploads
+VOLUME ["/app/data"]
 
-# Health check for orchestrators.
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:${PORT:-7860}/api/healthz || wget -qO- http://127.0.0.1:6779/healthz || exit 1
+EXPOSE 7860
 
-# Single-port mode by default.
-CMD ["node", "server/single.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:${PORT:-7860}/health || exit 1
+
+CMD ["node", "server/src/index.js"]

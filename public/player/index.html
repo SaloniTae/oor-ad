@@ -15,10 +15,14 @@
 
   <main>
     <div class="stage">
-      <!-- Double-video A/B swap: only one is visible at a time. -->
       <video id="videoA" class="v active" playsinline autoplay muted preload="auto"></video>
       <video id="videoB" class="v"        playsinline           muted preload="auto"></video>
+      <!-- image ad overlay -->
+      <a id="imgLink" class="img-layer hidden" target="_blank" rel="noopener">
+        <img id="imgAd" alt="advertisement" />
+      </a>
       <div id="badge" class="badge hidden">AD • <span id="countdown">0</span>s</div>
+      <div id="loading" class="loading hidden">Loading ad…</div>
     </div>
     <div class="controls">
       <button id="unmute">🔊 Unmute</button>
@@ -28,7 +32,8 @@
   <footer>
     <div class="meta">
       <div>Mode: <b id="mode">live</b></div>
-      <div>Client: <span id="cid">-</span></div>
+      <div>Viewer: <span id="cid">-</span></div>
+      <div>Channel: <span id="ch">-</span></div>
     </div>
   </footer>
 

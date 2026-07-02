@@ -1,57 +1,54 @@
 #!/usr/bin/env bash
-# One-command install of the ad-injection test stack on your VPS.
-# - Uses Docker Compose (installs Docker if missing)
-# - DOES NOT touch your existing Redis, Nginx, or system files
-# - Generates a random ADMIN_TOKEN if you don't set one
-# - Everything lives inside this directory + two Docker containers
-#
-# Usage:
-#   chmod +x install.sh && sudo ./install.sh
-#   # or with a custom token:  ADMIN_TOKEN=mysecret sudo ./install.sh
-
+# One-command install. Does NOT touch host Redis/Nginx. All in Docker.
 set -euo pipefail
-
 cd "$(dirname "$0")"
 
-echo "==> checking Docker"
 if ! command -v docker >/dev/null 2>&1; then
-  echo "==> installing Docker (official convenience script)"
-  curl -fsSL https://get.docker.com | sh
+  echo "==> installing Docker"; curl -fsSL https://get.docker.com | sh
 fi
-docker compose version >/dev/null 2>&1 || { echo "Docker Compose plugin missing. Install docker-compose-plugin."; exit 1; }
+docker compose version >/dev/null 2>&1 || { echo "Install docker-compose-plugin."; exit 1; }
 
 if [[ ! -f .env ]]; then
-  TOKEN="${ADMIN_TOKEN:-$(head -c 36 /dev/urandom | base64 | tr -d '/+=' | head -c 48)}"
+  JWT=$(head -c 48 /dev/urandom | base64 | tr -d '/+=' | head -c 48)
+  ADMIN_PW=$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
+  IP=$(curl -s ifconfig.me || echo localhost)
   cat > .env <<EOF
-ADMIN_TOKEN=${TOKEN}
-LIVE_HLS_URL=https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8
-CLUSTER_WORKERS=2
+PUBLIC_URL=http://${IP}:6780
+JWT_SECRET=${JWT}
+BOOTSTRAP_ADMIN_EMAIL=admin@example.com
+BOOTSTRAP_ADMIN_PASSWORD=${ADMIN_PW}
+RATE_LIMIT_RPM=120
+MAX_UPLOAD_MB=200
 EOF
-  echo "==> generated .env with ADMIN_TOKEN=${TOKEN}"
+  echo "==> generated .env"
 fi
 
-echo "==> checking port availability (6778/6779/6780)"
-for p in 6778 6779 6780; do
-  if ss -tlnp 2>/dev/null | grep -q ":${p} "; then
-    echo "!! Port ${p} is already in use. Edit docker-compose.yml to remap it before continuing." >&2
-    exit 1
-  fi
-done
+if ss -tlnp 2>/dev/null | grep -q ":6780 "; then
+  echo "!! Port 6780 already in use. Edit docker-compose.yml (ports:) to remap." >&2
+  exit 1
+fi
 
-echo "==> building + starting containers"
+echo "==> build + start"
 docker compose up -d --build
 
+IP=$(grep ^PUBLIC_URL= .env | cut -d= -f2-)
+EMAIL=$(grep ^BOOTSTRAP_ADMIN_EMAIL= .env | cut -d= -f2-)
+PW=$(grep ^BOOTSTRAP_ADMIN_PASSWORD= .env | cut -d= -f2-)
 echo
 echo "===================================================="
-echo " Ad Injection is up."
+echo " Ad Injection v2 is up."
 echo
-IP=$(curl -s ifconfig.me || echo YOUR_VPS_IP)
-TOKEN=$(grep ^ADMIN_TOKEN= .env | cut -d= -f2-)
-echo " Viewer:  http://${IP}:6780/player/"
-echo " Admin:   http://${IP}:6780/admin/"
-echo " Token:   ${TOKEN}"
+echo " Admin:      ${IP}/admin/"
+echo " API Docs:   ${IP}/docs/"
+echo " Health:     ${IP}/health"
 echo
-echo " Logs:      docker compose logs -f"
-echo " Stop all:  docker compose down"
-echo " NUKE all:  ./uninstall.sh"
+echo " Bootstrap login:"
+echo "   email:    ${EMAIL}"
+echo "   password: ${PW}"
+echo
+echo " Change password after first login."
+echo
+echo " Logs:       docker compose logs -f"
+echo " Stop:       docker compose down"
+echo " NUKE all:   ./uninstall.sh"
 echo "===================================================="

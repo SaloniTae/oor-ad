@@ -7,14 +7,17 @@ header{display:flex;align-items:center;justify-content:space-between;padding:12p
 .status.err{color:#ff8080;border-color:#3a1f1f}
 main{max-width:1100px;margin:20px auto;padding:0 12px}
 .stage{position:relative;width:100%;aspect-ratio:16/9;background:#000;border-radius:12px;overflow:hidden;border:1px solid #222}
-/* Both videos overlaid, hidden one is opacity 0 (still decoding). */
 .v{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;
    opacity:0;transition:opacity 120ms linear;pointer-events:none}
 .v.active{opacity:1;pointer-events:auto}
-.badge{position:absolute;top:14px;left:16px;background:#ff3b3b;color:#fff;padding:6px 12px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:.5px;box-shadow:0 4px 14px rgba(255,59,59,.35);z-index:2}
-.hidden{display:none}
+.img-layer{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:#000;z-index:3;text-decoration:none}
+.img-layer img{max-width:100%;max-height:100%;object-fit:contain}
+.hidden{display:none!important}
+.badge{position:absolute;top:14px;left:16px;background:#ff3b3b;color:#fff;padding:6px 12px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:.5px;box-shadow:0 4px 14px rgba(255,59,59,.35);z-index:4;opacity:0;transition:opacity 140ms linear}
+.badge.show{opacity:1}
+.loading{position:absolute;bottom:14px;left:16px;background:rgba(0,0,0,.6);color:#eee;padding:6px 10px;border-radius:6px;font-size:12px;z-index:4}
 .controls{margin-top:10px;display:flex;gap:10px}
 button{background:#1a1a1f;border:1px solid #2a2a32;color:#eaeaea;padding:8px 14px;border-radius:10px;cursor:pointer;font-size:13px}
 button:hover{background:#22222a}
 footer{max-width:1100px;margin:8px auto 40px;padding:0 12px;color:#8a8a90;font-size:13px}
-.meta{display:flex;gap:24px}
+.meta{display:flex;gap:20px;flex-wrap:wrap}
