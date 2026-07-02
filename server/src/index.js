@@ -58,8 +58,11 @@ app.get('/', (_req, res) => res.redirect('/admin/'));
 app.use('/v1/auth',      authRoutes);
 app.use('/v1/channels',  channelRoutes);
 app.use('/v1/channels',  triggersRoutes);   // shares /:id/... paths
-app.use('/v1/ads',       adsRoutes);
-app.use('/v1/ads',       adsRoutes.publicAssets);  // /:id/asset with signed token
+// IMPORTANT: mount the public /:id/asset router BEFORE the private one.
+// The private router uses requireAuth for the whole /v1/ads prefix, so if we
+// mounted it first, the signed-token asset endpoint would 401 for viewers.
+app.use('/v1/ads',       adsRoutes.publicAssets);  // /:id/asset with signed token (public, token-guarded)
+app.use('/v1/ads',       adsRoutes);               // everything else (requires session/api key)
 app.use('/v1/analytics', analyticsRoutes);
 app.use('/v1/admin',     adminRoutes);
 app.use('/v1/webhooks',  webhookRoutes);

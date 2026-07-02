@@ -21,6 +21,26 @@ const activeTrigger = db.prepare(`SELECT * FROM triggers WHERE channel_id = ? AN
 // Track auto-return timers by trigger id so /resume can cancel them.
 const timers = new Map();
 
+/**
+ * Build a public base URL that will actually resolve for a remote viewer.
+ * Priority:
+ *   1) cfg.publicUrl if it's set to something other than a localhost default.
+ *   2) The Host header from the request (works behind reverse proxies with
+ *      `trust proxy` enabled -- we set that in index.js).
+ * This fixes image/video ads that use a signed asset URL: with the old code,
+ * a misconfigured PUBLIC_URL made viewers try to fetch http://localhost:...
+ * which of course fails.
+ */
+function publicBaseFor(req) {
+  const p = cfg.publicUrl || '';
+  const isLocalDefault = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(p) || !p;
+  if (!isLocalDefault) return p.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const host  = (req.headers['x-forwarded-host']  || req.get('host') || '').split(',')[0].trim();
+  if (host) return `${proto}://${host}`;
+  return p.replace(/\/+$/, '');
+}
+
 const TriggerBody = z.object({
   ad_id: z.string().min(1),
   duration_seconds: z.number().int().min(1).max(600).optional(),
@@ -43,7 +63,7 @@ r.post('/:id/trigger', validate(TriggerBody), (req, res, next) => {
   let adUrl = ad.source;
   if (ad.is_upload) {
     const token = jwt.sign({ typ: 'asset', ad: ad.id }, cfg.jwtSecret, { expiresIn: 3600 });
-    adUrl = `${cfg.publicUrl}/v1/ads/${ad.id}/asset?token=${token}`;
+    adUrl = `${publicBaseFor(req)}/v1/ads/${ad.id}/asset?token=${token}`;
   }
 
   const cmd = {
@@ -57,10 +77,11 @@ r.post('/:id/trigger', validate(TriggerBody), (req, res, next) => {
   };
 
   insertTrigger.run(triggerId, req.tenant.id, channel.id, ad.id, duration, 'active', startAt, endAt, req.apiKey?.id || 'session', Date.now());
-  ws.setState(channel.id, { mode: 'ad', triggerId, adId: ad.id, adType: ad.type, adUrl, duration, startAt });
+  ws.setState(channel.id, { mode: 'ad', triggerId, adId: ad.id, adType: ad.type, adUrl, duration, startAt, metadata: cmd.metadata });
   const delivered = ws.broadcast(channel.id, cmd);
 
-  // Auto-return timer (server-side authoritative).
+  // Auto-return timer (server-side authoritative). Also clear the state so
+  // late-joining viewers get 'live', not a phantom in-progress ad.
   const t = setTimeout(() => {
     setTriggerStatus.run('completed', triggerId);
     ws.setState(channel.id, { mode: 'live' });

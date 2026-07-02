@@ -15,7 +15,9 @@ main{max-width:1100px;margin:20px auto;padding:0 12px}
 .hidden{display:none!important}
 .badge{position:absolute;top:14px;left:16px;background:#ff3b3b;color:#fff;padding:6px 12px;border-radius:6px;font-weight:700;font-size:13px;letter-spacing:.5px;box-shadow:0 4px 14px rgba(255,59,59,.35);z-index:4;opacity:0;transition:opacity 140ms linear}
 .badge.show{opacity:1}
-.loading{position:absolute;bottom:14px;left:16px;background:rgba(0,0,0,.6);color:#eee;padding:6px 10px;border-radius:6px;font-size:12px;z-index:4}
+.loading{position:absolute;top:14px;right:16px;background:rgba(0,0,0,.65);color:#eee;padding:6px 10px;border-radius:6px;font-size:12px;z-index:4;display:flex;align-items:center;gap:8px}
+.loading::before{content:"";width:10px;height:10px;border-radius:50%;border:2px solid rgba(255,255,255,.25);border-top-color:#fff;animation:spin 700ms linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .controls{margin-top:10px;display:flex;gap:10px}
 button{background:#1a1a1f;border:1px solid #2a2a32;color:#eaeaea;padding:8px 14px;border-radius:10px;cursor:pointer;font-size:13px}
 button:hover{background:#22222a}

@@ -334,28 +334,38 @@ function openAdUpload(view) {
   const err = h('div', { class: 'err' });
   const f = {
     name: h('input', { placeholder: 'Ad name' }),
-    file: h('input', { type: 'file', accept: 'video/*,image/*,application/vnd.apple.mpegurl' }),
+    file: h('input', { type: 'file', accept: 'video/mp4,video/webm,video/quicktime,video/x-matroska,application/vnd.apple.mpegurl,application/x-mpegurl,image/png,image/jpeg,image/webp,image/gif,image/heic,image/heif,image/avif,image/bmp,video/*,image/*' }),
     duration: h('input', { type: 'number', value: 15, min: 1, max: 600 }),
     click_url: h('input', { placeholder: 'https://example.com (image ads)' }),
   };
+  const submit = h('button', { class: 'primary', onclick: async () => {
+    err.className = 'err'; err.textContent = '';
+    const file = f.file.files[0];
+    if (!file) { err.textContent = 'Choose a file'; return; }
+    // Client sanity: warn early if the user picked something clearly unsupported.
+    const looksOk = /^(image\/|video\/|application\/(vnd\.apple\.mpegurl|x-mpegurl))/i.test(file.type)
+      || /\.(mp4|webm|mov|mkv|m3u8|png|jpe?g|webp|gif|heic|heif|avif|bmp)$/i.test(file.name);
+    if (!looksOk) { err.textContent = `That file type (${file.type || 'unknown'}) isn't supported.`; return; }
+    submit.disabled = true; submit.textContent = 'Uploading\u2026';
+    const durNum = Number(f.duration.value);
+    const durOk  = Number.isFinite(durNum) && durNum >= 1 ? durNum : 15;
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('name', f.name.value || file.name);
+    fd.append('duration_seconds', String(durOk));
+    if (f.click_url.value) fd.append('click_url', f.click_url.value);
+    try { await api('POST', '/v1/ads/upload', fd, { multipart: true }); nav('ads'); }
+    catch (e) { err.textContent = e.message || 'Upload failed'; }
+    finally { submit.disabled = false; submit.textContent = 'Upload'; }
+  }}, 'Upload');
   view.append(h('div', { class: 'wrap narrow' },
     h('h1', {}, 'Upload ad'),
     h('div', { class: 'card' },
       label('Name'), f.name,
-      label('File (mp4, webm, m3u8, png, jpg, webp)'), f.file,
+      label('File (mp4, webm, mov, m3u8, png, jpg, webp, gif, heic, avif)'), f.file,
       label('Duration (seconds)'), f.duration,
       label('Click-through URL (for image ads, optional)'), f.click_url,
-      h('button', { class: 'primary', onclick: async () => {
-        err.textContent = '';
-        if (!f.file.files[0]) { err.textContent = 'Choose a file'; return; }
-        const fd = new FormData();
-        fd.append('file', f.file.files[0]);
-        fd.append('name', f.name.value || f.file.files[0].name);
-        fd.append('duration_seconds', f.duration.value || 15);
-        if (f.click_url.value) fd.append('click_url', f.click_url.value);
-        try { await api('POST', '/v1/ads/upload', fd, { multipart: true }); nav('ads'); }
-        catch (e) { err.textContent = e.message; }
-      }}, 'Upload'),
+      submit,
       err,
     ),
     h('button', { class: 'link', onclick: () => nav('ads') }, '← back'),

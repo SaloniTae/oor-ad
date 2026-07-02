@@ -27,13 +27,30 @@ const storage = multer.diskStorage({
 const ALLOWED = new Set([
   'video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska',
   'application/vnd.apple.mpegurl', 'application/x-mpegurl',
-  'image/png', 'image/jpeg', 'image/webp', 'image/gif',
+  'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif',
+  'image/heic', 'image/heif', 'image/avif', 'image/bmp',
 ]);
+// Some browsers (esp. mobile / drag-drop) send 'application/octet-stream'.
+// Trust the file extension as a fallback so real image uploads don't 400 out.
+const EXT_TO_MIME = {
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp', '.gif': 'image/gif',
+  '.heic': 'image/heic', '.heif': 'image/heif', '.avif': 'image/avif', '.bmp': 'image/bmp',
+  '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime', '.mkv': 'video/x-matroska',
+  '.m3u8': 'application/vnd.apple.mpegurl',
+};
 const upload = multer({
   storage,
   limits: { fileSize: cfg.maxUploadMb * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
-    if (!ALLOWED.has(file.mimetype)) return cb(new HttpError(400, 'bad_mime', `Unsupported type: ${file.mimetype}`));
+    let mt = (file.mimetype || '').toLowerCase();
+    if (!ALLOWED.has(mt)) {
+      const ext = path.extname(file.originalname || '').toLowerCase();
+      const guess = EXT_TO_MIME[ext];
+      if (guess && ALLOWED.has(guess)) { file.mimetype = guess; return cb(null, true); }
+      return cb(new HttpError(400, 'bad_mime',
+        `Unsupported type: ${file.mimetype || 'unknown'} (${ext || 'no ext'}). Allowed: mp4, webm, mov, mkv, m3u8, png, jpg, webp, gif, heic, avif.`));
+    }
     cb(null, true);
   },
 });
@@ -44,8 +61,24 @@ function detectTypeFromMime(m) {
   return 'video';
 }
 
+// Wraps multer so its errors (file too big, wrong mime, etc.) turn into
+// clean JSON responses instead of a 500. The old handler let raw MulterError
+// bubble up and users saw "Internal server error" for perfectly legal-looking
+// uploads that hit the size cap.
+function uploadSingle(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err instanceof HttpError) return next(err);
+    if (err && err.code === 'LIMIT_FILE_SIZE') {
+      return next(new HttpError(413, 'file_too_large',
+        `File exceeds ${cfg.maxUploadMb} MB limit.`));
+    }
+    return next(new HttpError(400, 'upload_failed', err.message || 'Upload failed'));
+  });
+}
+
 // ---- upload endpoint (multipart) ------------------------------------------
-r.post('/upload', upload.single('file'), (req, res, next) => {
+r.post('/upload', uploadSingle, (req, res, next) => {
   if (!req.file) return next(new HttpError(400, 'no_file', 'file field required'));
   const name = (req.body.name || req.file.originalname).slice(0, 120);
   const duration = Math.max(1, Math.min(600, Number(req.body.duration_seconds) || 15));
@@ -104,11 +137,22 @@ r.delete('/:id', ownAd, (req, res) => {
 
 // ---- asset serving (for uploaded files) ----------------------------------
 // Uses a short-lived signed URL so ad files aren't exposed publicly by ID guessing.
+// Builds the base URL from the incoming request when PUBLIC_URL isn't set to a
+// reachable value (e.g. still on the localhost default in a hosted deploy).
+function publicBaseFor(req) {
+  const p = cfg.publicUrl || '';
+  const isLocalDefault = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(p) || !p;
+  if (!isLocalDefault) return p.replace(/\/+$/, '');
+  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const host  = (req.headers['x-forwarded-host']  || req.get('host') || '').split(',')[0].trim();
+  if (host) return `${proto}://${host}`;
+  return p.replace(/\/+$/, '');
+}
 r.get('/:id/signed-url', ownAd, (req, res) => {
   if (!req.ad.is_upload) return res.json({ url: req.ad.source, type: req.ad.type });
   const jwt = require('jsonwebtoken');
   const token = jwt.sign({ typ: 'asset', ad: req.ad.id }, cfg.jwtSecret, { expiresIn: 3600 });
-  res.json({ url: `${cfg.publicUrl}/v1/ads/${req.ad.id}/asset?token=${token}`, type: req.ad.type });
+  res.json({ url: `${publicBaseFor(req)}/v1/ads/${req.ad.id}/asset?token=${token}`, type: req.ad.type });
 });
 
 // Public asset endpoint - validates the signed token.
