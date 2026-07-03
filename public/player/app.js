@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v7 - Bugfix)
+ * Ad Injection - viewer player (production build v9 - Strict Sync)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -32,7 +32,7 @@
   let currentToken = 0;             
   
   let userWantsSound = true;       
-  let isBumperActive = false; // Lock to prevent user clicks from breaking the preload
+  let isBumperActive = false; 
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
@@ -94,7 +94,6 @@
       adEl.muted = true;
       if (userWantsSound) liveEl.play().catch(()=>{});
     } else if (isBumperActive) {
-      // Hardware lock: if the 7-second bumper is running, DO NOT let the ad play early
       liveEl.muted = true; 
       adEl.muted = true;
     } else {
@@ -149,7 +148,6 @@
     try { adEl.pause(); } catch {}
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
 
-    // BUGFIX: Explicitly strip HTML autoplay and mute so it preloads completely silently
     adEl.autoplay = false; 
     adEl.muted = true;
 
@@ -159,7 +157,7 @@
       adHls.attachMedia(adEl);
       adHls.on(Hls.Events.MEDIA_ATTACHED, () => {
         adHls.loadSource(url);
-        adEl.pause(); // Force pause after attaching source
+        adEl.pause(); 
       });
       adHls.on(Hls.Events.ERROR, (_e, d) => {
         if (!d.fatal) return;
@@ -168,10 +166,7 @@
       });
     } else {
       adEl.src = url;
-      try { 
-        adEl.load(); 
-        adEl.pause(); 
-      } catch {}
+      try { adEl.load(); adEl.pause(); } catch {}
     }
   }
 
@@ -213,15 +208,13 @@
   function hideImageLayer() {
     imgLink.classList.remove('on');
     clearTimeout(imageClearTimeout);
-    
-    // 500ms delay to allow CSS opacity transition to finish before wiping SRC
     imageClearTimeout = setTimeout(() => {
       imgAd.removeAttribute('src');
       imgAd.onload = null; imgAd.onerror = null;
     }, 500); 
   }
 
-  // ---- Ad Pre-Roll Engine ---------------------------------------------------
+  // ---- Strict Sync Ad Engine ------------------------------------------------
   function playAdFlow(msg) {
     const myToken = ++currentToken;
     clearTimeout(adTimer);
@@ -231,23 +224,20 @@
     currentAdId = msg.adId;
     currentAdType = inferAdType(msg);
     
+    // Calculate precise time based strictly on backend state
     const elapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
-    const remaining = Math.max(1, (msg.duration || 15) - elapsed);
+    const globalRemaining = Math.max(0, (msg.duration || 15) - elapsed);
 
     setMode('ad');
-    isBumperActive = true; // Lock playback interaction
+    isBumperActive = true; 
 
     hideImageLayer();
     hideAdVideoLayer();
     hideBadge();
     
-    // Crossfade Live Audio OUT 
     animateVolume(liveEl, 0, 500);
-
-    // Show "We'll be right back"
     showLoading(); 
 
-    // BUGFIX: Cancel image wipe timeout if we are trying to load a new image
     if (currentAdType === 'image') {
       clearTimeout(imageClearTimeout); 
       imgAd.src = msg.adUrl; 
@@ -255,35 +245,44 @@
       loadAdVideo(msg.adUrl);
     }
 
-    // Wait exactly 7 seconds, then transition
+    // Dynamic Bumper: Wait up to 7 seconds, OR however much time is left if a viewer joins late
+    const bumperDurationMs = Math.min(7000, globalRemaining * 1000);
+
     bumperTimer = setTimeout(() => {
       if (myToken !== currentToken) return;
       
-      isBumperActive = false; // Unlock
+      isBumperActive = false; 
       hideLoading(); 
       
+      // Recalculate exactly how much time is left for the ad visually AFTER the bumper
+      const currentElapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
+      const adVisualRemaining = Math.max(0, (msg.duration || 15) - currentElapsed);
+      
+      if (adVisualRemaining <= 0.5) {
+        returnToLive();
+        return;
+      }
+
       if (currentAdType === 'image') {
         liveEl.muted = true;
         liveEl.volume = 0;
         showImageLayer(msg.metadata?.click_url);
       } else {
         showAdVideoLayer();
-        
-        // BUGFIX: Reset video to 0 just in case, then perfectly crossfade audio IN
         adEl.currentTime = 0; 
         adEl.volume = 0;
         safePlay(adEl);
         animateVolume(adEl, 1, 500); 
       }
       
-      showBadgeAndCountdown(remaining);
+      showBadgeAndCountdown(adVisualRemaining);
       reportEvent('ad.impression');
 
       adTimer = setTimeout(() => {
         if (myToken === currentToken) returnToLive();
-      }, remaining * 1000);
+      }, adVisualRemaining * 1000);
 
-    }, 7000); 
+    }, bumperDurationMs); 
   }
 
   function returnToLive() {
@@ -311,7 +310,6 @@
       hideImageLayer();
     }
     
-    // Crossfade Live Audio IN
     animateVolume(liveEl, 1, 500);
     safePlay(liveEl);
     
