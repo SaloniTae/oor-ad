@@ -1,36 +1,11 @@
 /**
- * Ad Injection – viewer player (production build v3)
- *
- * Architecture (fixed roles, zero swaps):
- *   videoA  = LIVE. Loaded once. Never destroyed, seeked, or reloaded during
- *             ads. It just keeps playing (muted during ad breaks) behind the
- *             ad layer, so returning to live is a pure visibility toggle –
- *             no HLS.js state loss, no restart-from-beginning, no reload gap.
- *   videoB  = AD video. Only used for video ads. Loaded when a video ad
- *             starts, played on top of live via z-index, hidden + torn down
- *             when the ad ends.
- *   <img>   = IMAGE ad overlay. On top of everything, hidden by default.
- *
- * Why this fixes every bug you saw:
- *   - "Photo ad delays / freezes / then restarts from beginning"
- *       -> the old code paused live and sometimes reloaded HLS after an
- *          image ad. Now we never touch live. Image ads are pure overlays.
- *   - "Video ad overlaps sometimes"
- *       -> the old code cross-faded two <video>s at opacity ~50% for 140ms,
- *          which visibly overlapped. Now we hard-switch visibility, no fade.
- *   - "Video ad disappearing not synced with the timer / not smooth"
- *       -> the old code reloaded live after the ad, so there was a 1-3s
- *          gap between the countdown hitting 0 and live coming back. Now
- *          live has been playing the whole time – swap-back is instant.
- *   - "Resume button always restarts the stream"
- *       -> server: no broadcast if no active ad. Client: no-op if already
- *          live. And even when it does run, returnToLive() only toggles
- *          visibility – it doesn't touch the live element.
+ * Ad Injection - viewer player (production build v3)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
-  const liveEl = $('videoA');            // fixed role: LIVE
-  const adEl   = $('videoB');            // fixed role: AD (video ads only)
+  
+  const liveEl = $('videoA');            
+  const adEl   = $('videoB');            
   const statusEl = $('status'), badge = $('badge'), cd = $('countdown');
   const modeEl = $('mode'), cidEl = $('cid'), chEl = $('ch');
   const imgLink = $('imgLink'), imgAd = $('imgAd'), loadingEl = $('loading');
@@ -41,47 +16,42 @@
   const cfg = window.AD_INJECTION_CONFIG || {};
   const wsUrl   = cfg.wsUrl  || qs.get('ws');
   let   liveUrl = cfg.liveUrl || qs.get('live') || null;
-  if (!wsUrl) {
-    statusEl.textContent = 'missing ws url (?ws=…)'; statusEl.className = 'status err';
-    return;
-  }
+
+  if (!wsUrl) return;
 
   // ---- state ---------------------------------------------------------------
   let liveHls = null;
   let adHls   = null;
   let adTimer = null;
   let countdownTimer = null;
-  let currentMode = 'live';         // 'live' | 'ad'
-  let currentAdType = null;         // 'video' | 'hls' | 'image' | null
+  let currentMode = 'live';         
+  let currentAdType = null;         
   let currentAdId = null;
   let currentTriggerId = null;
-  let currentToken = 0;             // increments per ad dispatch; cancels stale operations
-  let userWantsSound = false;       // set true when the user clicks unmute at least once
+  let currentToken = 0;             
+  let userWantsSound = false;       
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
   // ---- audio / unmute button ------------------------------------------------
-  // Only ONE element ever produces audio at a time: whichever is on top.
-  // During an image ad, live is muted (image ads have no audio anyway).
-  // During a video ad, live is muted, ad video honors the user's preference.
   function applyAudioState() {
     if (currentMode === 'ad' && currentAdType === 'image') {
       liveEl.muted = true;
       adEl.muted   = true;
-    } else if (currentMode === 'ad') {   // video ad
+    } else if (currentMode === 'ad') {   
       liveEl.muted = true;
       adEl.muted   = !userWantsSound;
-    } else {                              // live
+    } else {                              
       liveEl.muted = !userWantsSound;
       adEl.muted   = true;
     }
   }
+
   unmuteBtn.onclick = () => {
     userWantsSound = !userWantsSound;
-    unmuteBtn.textContent = userWantsSound ? '🔈 Mute' : '🔊 Unmute';
+    unmuteBtn.textContent = userWantsSound ? 'Mute' : 'Tap to Unmute';
     applyAudioState();
-    // Kick playback on the currently-audible element so audio actually starts.
     const audible = (currentMode === 'ad' && currentAdType !== 'image') ? adEl : liveEl;
     audible.play().catch(() => {});
   };
@@ -102,6 +72,7 @@
     if (liveHls) { try { liveHls.destroy(); } catch {} liveHls = null; }
     try { liveEl.pause(); } catch {}
     liveEl.removeAttribute('src'); try { liveEl.load(); } catch {}
+
     const isHls = /\.m3u8(\?|$)/i.test(liveUrl);
     if (isHls && window.Hls && Hls.isSupported()) {
       liveHls = new Hls(newHlsConfig());
@@ -126,14 +97,15 @@
     if (adHls) { try { adHls.destroy(); } catch {} adHls = null; }
     try { adEl.pause(); } catch {}
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
+
     const finishOnce = (() => {
       let called = false;
       return () => { if (called) return; called = true; onReady(); };
     })();
     const onReadyEvent = () => finishOnce();
+
     adEl.addEventListener('canplay',     onReadyEvent, { once: true });
     adEl.addEventListener('loadeddata',  onReadyEvent, { once: true });
-    // Safety: if the network stalls, don't hang forever.
     setTimeout(() => finishOnce(), 5000);
 
     const isHls = /\.m3u8(\?|$)/i.test(url);
@@ -158,10 +130,8 @@
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
   }
 
-  // ---- UI helpers -----------------------------------------------------------
+  // ---- UI helpers (Updated for CSS Fades) -----------------------------------
   function showBadgeAndCountdown(duration) {
-    badge.classList.remove('hidden');
-    void badge.offsetWidth;
     badge.classList.add('show');
     let remaining = Math.ceil(duration);
     cd.textContent = remaining;
@@ -171,37 +141,42 @@
       if (remaining <= 0) clearInterval(countdownTimer);
     }, 1000);
   }
+
   function hideBadge() {
     badge.classList.remove('show');
-    setTimeout(() => badge.classList.add('hidden'), 180);
     clearInterval(countdownTimer);
   }
-  function showLoading() { loadingEl && loadingEl.classList.remove('hidden'); }
-  function hideLoading() { loadingEl && loadingEl.classList.add('hidden'); }
+
+  function showLoading() { loadingEl && loadingEl.classList.add('show'); }
+  function hideLoading() { loadingEl && loadingEl.classList.remove('show'); }
 
   function showAdVideoLayer() { adEl.classList.add('on'); }
   function hideAdVideoLayer() { adEl.classList.remove('on'); }
+
   function showImageLayer(clickUrl) {
     if (clickUrl) imgLink.setAttribute('href', clickUrl);
     else          imgLink.removeAttribute('href');
-    imgLink.classList.remove('hidden');
+    imgLink.classList.add('on');
   }
+
   function hideImageLayer() {
-    imgLink.classList.add('hidden');
-    imgAd.removeAttribute('src');
-    imgAd.onload = null; imgAd.onerror = null;
+    imgLink.classList.remove('on');
+    // Wait for the 500ms CSS opacity transition to complete before clearing src
+    setTimeout(() => {
+      imgAd.removeAttribute('src');
+      imgAd.onload = null; imgAd.onerror = null;
+    }, 500); 
   }
 
   // ---- ad flows -------------------------------------------------------------
   function playVideoAd(adUrl, duration) {
     const myToken = ++currentToken;
-    // Clear any leftover image overlay from a prior image ad.
     hideImageLayer();
     setMode('ad');
-    // Note: currentAdType is set by dispatchAd BEFORE calling us.
     showLoading();
+
     loadAdVideo(adUrl, () => {
-      if (myToken !== currentToken) return;   // superseded
+      if (myToken !== currentToken) return;
       hideLoading();
       applyAudioState();
       showAdVideoLayer();
@@ -209,6 +184,7 @@
       showBadgeAndCountdown(duration);
       reportEvent('ad.impression');
     });
+
     clearTimeout(adTimer);
     adTimer = setTimeout(() => {
       if (myToken === currentToken) returnToLive();
@@ -217,14 +193,14 @@
 
   function playImageAd(imgUrl, duration, meta) {
     const myToken = ++currentToken;
-    // Ensure any video ad layer from a prior trigger is torn down.
     hideAdVideoLayer();
     unloadAdVideo();
     setMode('ad');
     showLoading();
-    applyAudioState();     // mutes live so the image ad plays in silence
+    applyAudioState();
 
     const clickUrl = meta && meta.click_url ? meta.click_url : null;
+
     const reveal = () => {
       if (myToken !== currentToken) return;
       hideLoading();
@@ -236,13 +212,12 @@
     imgAd.onload  = reveal;
     imgAd.onerror = () => {
       if (myToken !== currentToken) return;
-      // Fail-graceful: still run the countdown so the ad break isn't lost.
       hideLoading();
       showBadgeAndCountdown(duration);
       reportEvent('ad.impression');
     };
     imgAd.src = imgUrl;
-    // If cached, onload may not fire – check `complete` manually.
+
     if (imgAd.complete && imgAd.naturalWidth > 0) reveal();
 
     clearTimeout(adTimer);
@@ -253,22 +228,22 @@
 
   function returnToLive() {
     clearTimeout(adTimer); adTimer = null;
-    // No-op if we're already live and there's no ad UI up. This is what
-    // makes the Resume button safe to spam without ever restarting the stream.
     if (currentMode === 'live' && !currentAdType) {
       hideBadge(); hideLoading(); hideAdVideoLayer(); hideImageLayer();
       return;
     }
+
     const wasVideoAd = (currentAdType === 'video' || currentAdType === 'hls');
     currentAdType = null; currentAdId = null; currentTriggerId = null;
     setMode('live');
+    
     hideBadge();
     hideLoading();
     hideImageLayer();
     hideAdVideoLayer();
+    
     if (wasVideoAd) unloadAdVideo();
-    // Live has been running the whole time. Just make sure it's audible
-    // per the user's preference and playing.
+    
     applyAudioState();
     liveEl.play().catch(() => {});
     reportEvent('ad.complete');
@@ -288,6 +263,7 @@
     currentAdType   = inferAdType(msg);
     const elapsed   = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
     const remaining = Math.max(1, (msg.duration || 15) - elapsed);
+
     if (currentAdType === 'image') return playImageAd(msg.adUrl, remaining, msg.metadata);
     return playVideoAd(msg.adUrl, remaining);
   }
@@ -319,12 +295,14 @@
   // ---- WebSocket ------------------------------------------------------------
   let backoff = 500;
   function connect() {
-    setStatus('connecting…');
+    setStatus('connecting...', '');
     socket = new WebSocket(wsUrl);
+
     socket.onopen = () => {
-      setStatus('live • connected', 'ok'); backoff = 500;
+      setStatus('live - connected', 'ok'); backoff = 500;
       socket.send(JSON.stringify({ type: 'hello' }));
     };
+
     socket.onmessage = (ev) => {
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       if (m.type === 'welcome') {
@@ -337,8 +315,9 @@
       } else if (m.type === 'state')   applyState(m.state);
       else if (m.type === 'command') handleCommand(m);
     };
+
     socket.onclose = () => {
-      setStatus('reconnecting…', 'err');
+      setStatus('reconnecting...', 'err');
       setTimeout(connect, backoff);
       backoff = Math.min(backoff * 2, 15000);
     };
