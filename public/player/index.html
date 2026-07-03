@@ -1,46 +1,36 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>Live Player</title>
-<link rel="stylesheet" href="style.css" />
-<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Live Player</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
 </head>
 <body>
-  <header>
-    <div class="brand">LIVE</div>
-    <div id="status" class="status">connecting…</div>
-  </header>
+  <div class="stage">
+    <!-- Raw video taking the entire screen -->
+    <video id="videoA" class="v v-live" playsinline autoplay muted preload="auto"></video>
+    <video id="videoB" class="v v-ad"   playsinline           muted preload="auto"></video>
 
-  <main>
-    <div class="stage">
-      <!--
-        Fixed roles: videoA is ALWAYS the live stream (loaded once, never touched
-        again during ads). videoB is ONLY used for video ads. During any ad,
-        videoA keeps playing behind – muted – so the return-to-live is instant
-        with no reload and no restart-from-beginning.
-      -->
-      <video id="videoA" class="v v-live" playsinline autoplay muted preload="auto"></video>
-      <video id="videoB" class="v v-ad"   playsinline           muted preload="auto"></video>
-      <a id="imgLink" class="img-layer hidden" target="_blank" rel="noopener">
-        <img id="imgAd" alt="advertisement" />
-      </a>
-      <div id="badge" class="badge hidden">AD <span id="countdown">0</span>s</div>
-      <div id="loading" class="loading hidden">Loading ad…</div>
-    </div>
-    <div class="controls">
-      <button id="unmute">🔊 Unmute</button>
-    </div>
-  </main>
+    <a id="imgLink" class="img-layer" target="_blank" rel="noopener">
+      <img id="imgAd" alt="advertisement" />
+    </a>
 
-  <footer>
-    <div class="meta">
-      <div>Mode: <b id="mode">live</b></div>
-      <div>Viewer: <span id="cid">-</span></div>
-      <div>Channel: <span id="ch">-</span></div>
+    <!-- Premium UI overlays -->
+    <div id="badge" class="badge">Ad will end in <span id="countdown">0</span>s</div>
+    
+    <div id="loading" class="loading">
+      <div class="spinner"></div> Loading ad...
     </div>
-  </footer>
+    
+    <button id="unmute" class="unmute-btn">Tap to Unmute</button>
+  </div>
+
+  <!-- Hidden elements to maintain app.js state references without crashing -->
+  <div style="display:none;">
+    <span id="status"></span><span id="mode"></span><span id="cid"></span><span id="ch"></span>
+  </div>
 
   <script src="app.js"></script>
 </body>
