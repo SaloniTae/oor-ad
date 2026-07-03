@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v6 - 7s Bumper Engine)
+ * Ad Injection - viewer player (production build v7 - Bugfix)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -24,6 +24,7 @@
   let adTimer = null;
   let bumperTimer = null;
   let countdownTimer = null;
+  let imageClearTimeout = null;
   let currentMode = 'live';         
   let currentAdType = null;         
   let currentAdId = null;
@@ -31,11 +32,12 @@
   let currentToken = 0;             
   
   let userWantsSound = true;       
+  let isBumperActive = false; // Lock to prevent user clicks from breaking the preload
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  // ---- audio fade controller (101% Bulletproof) ----------------------------
+  // ---- audio fade controller -----------------------------------------------
   function animateVolume(el, targetVolume, durationMs = 500) {
     if (!el) return;
     
@@ -58,7 +60,6 @@
       if (progress < 1) {
         requestAnimationFrame(step);
       } else {
-        // HARD LOCK: If volume hits 0, disable track completely to stop background bleed
         if (targetVolume === 0) el.muted = true;
       }
     }
@@ -92,11 +93,13 @@
       liveEl.volume = userWantsSound ? 1 : 0;
       adEl.muted = true;
       if (userWantsSound) liveEl.play().catch(()=>{});
+    } else if (isBumperActive) {
+      // Hardware lock: if the 7-second bumper is running, DO NOT let the ad play early
+      liveEl.muted = true; 
+      adEl.muted = true;
     } else {
-      // Force live completely silent if in bumper or ad mode
       liveEl.muted = true; 
       liveEl.volume = 0;
-      
       if (currentAdType !== 'image') {
         adEl.muted = !userWantsSound;
         adEl.volume = userWantsSound ? 1 : 0;
@@ -141,17 +144,23 @@
     safePlay(liveEl);
   }
 
-  // Preloads the video silently in the background without playing it
   function loadAdVideo(url) {
     if (adHls) { try { adHls.destroy(); } catch {} adHls = null; }
     try { adEl.pause(); } catch {}
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
 
+    // BUGFIX: Explicitly strip HTML autoplay and mute so it preloads completely silently
+    adEl.autoplay = false; 
+    adEl.muted = true;
+
     const isHls = /\.m3u8(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
       adHls = new Hls(newHlsConfig());
       adHls.attachMedia(adEl);
-      adHls.on(Hls.Events.MEDIA_ATTACHED, () => adHls.loadSource(url));
+      adHls.on(Hls.Events.MEDIA_ATTACHED, () => {
+        adHls.loadSource(url);
+        adEl.pause(); // Force pause after attaching source
+      });
       adHls.on(Hls.Events.ERROR, (_e, d) => {
         if (!d.fatal) return;
         if (d.type === Hls.ErrorTypes.NETWORK_ERROR) adHls.startLoad();
@@ -159,7 +168,10 @@
       });
     } else {
       adEl.src = url;
-      try { adEl.load(); } catch {}
+      try { 
+        adEl.load(); 
+        adEl.pause(); 
+      } catch {}
     }
   }
 
@@ -200,7 +212,10 @@
 
   function hideImageLayer() {
     imgLink.classList.remove('on');
-    setTimeout(() => {
+    clearTimeout(imageClearTimeout);
+    
+    // 500ms delay to allow CSS opacity transition to finish before wiping SRC
+    imageClearTimeout = setTimeout(() => {
       imgAd.removeAttribute('src');
       imgAd.onload = null; imgAd.onerror = null;
     }, 500); 
@@ -220,39 +235,42 @@
     const remaining = Math.max(1, (msg.duration || 15) - elapsed);
 
     setMode('ad');
+    isBumperActive = true; // Lock playback interaction
 
-    // 1. Instantly hide any old UI
     hideImageLayer();
     hideAdVideoLayer();
     hideBadge();
     
-    // 2. Crossfade Live Audio OUT (Bumper Phase starts)
+    // Crossfade Live Audio OUT 
     animateVolume(liveEl, 0, 500);
 
-    // 3. Show "We'll be right back"
+    // Show "We'll be right back"
     showLoading(); 
 
-    // 4. Preload Assets purely in the background (No UI blocks)
+    // BUGFIX: Cancel image wipe timeout if we are trying to load a new image
     if (currentAdType === 'image') {
+      clearTimeout(imageClearTimeout); 
       imgAd.src = msg.adUrl; 
     } else {
       loadAdVideo(msg.adUrl);
     }
 
-    // 5. Wait exactly 7 seconds, then crossfade into the Ad visually
+    // Wait exactly 7 seconds, then transition
     bumperTimer = setTimeout(() => {
       if (myToken !== currentToken) return;
       
-      hideLoading(); // Fade out bumper
+      isBumperActive = false; // Unlock
+      hideLoading(); 
       
       if (currentAdType === 'image') {
-        // Hardware lock Live Audio again just in case
         liveEl.muted = true;
         liveEl.volume = 0;
         showImageLayer(msg.metadata?.click_url);
       } else {
         showAdVideoLayer();
-        // Start video muted, then perfectly crossfade audio IN over 500ms
+        
+        // BUGFIX: Reset video to 0 just in case, then perfectly crossfade audio IN
+        adEl.currentTime = 0; 
         adEl.volume = 0;
         safePlay(adEl);
         animateVolume(adEl, 1, 500); 
@@ -261,7 +279,6 @@
       showBadgeAndCountdown(remaining);
       reportEvent('ad.impression');
 
-      // 6. Schedule Ad End
       adTimer = setTimeout(() => {
         if (myToken === currentToken) returnToLive();
       }, remaining * 1000);
@@ -272,6 +289,7 @@
   function returnToLive() {
     clearTimeout(adTimer); adTimer = null;
     clearTimeout(bumperTimer); bumperTimer = null;
+    isBumperActive = false;
     
     if (currentMode === 'live' && !currentAdType) {
       hideBadge(); hideLoading(); hideAdVideoLayer(); hideImageLayer();
@@ -286,7 +304,6 @@
     hideLoading();
     
     if (wasVideoAd) {
-      // Crossfade Ad Audio OUT over 500ms
       animateVolume(adEl, 0, 500);
       hideAdVideoLayer();
       setTimeout(() => unloadAdVideo(), 500); 
@@ -294,7 +311,7 @@
       hideImageLayer();
     }
     
-    // Crossfade Live Audio IN over 500ms
+    // Crossfade Live Audio IN
     animateVolume(liveEl, 1, 500);
     safePlay(liveEl);
     
