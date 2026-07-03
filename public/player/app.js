@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v9 - Strict Sync)
+ * Ad Injection - viewer player (production build v10 - True Sync)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -143,7 +143,7 @@
     safePlay(liveEl);
   }
 
-  function loadAdVideo(url) {
+  function loadAdVideo(url, startTimeOffset = 0) {
     if (adHls) { try { adHls.destroy(); } catch {} adHls = null; }
     try { adEl.pause(); } catch {}
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
@@ -157,6 +157,7 @@
       adHls.attachMedia(adEl);
       adHls.on(Hls.Events.MEDIA_ATTACHED, () => {
         adHls.loadSource(url);
+        adEl.currentTime = startTimeOffset; // Sync late joiner
         adEl.pause(); 
       });
       adHls.on(Hls.Events.ERROR, (_e, d) => {
@@ -166,7 +167,11 @@
       });
     } else {
       adEl.src = url;
-      try { adEl.load(); adEl.pause(); } catch {}
+      try { 
+        adEl.load(); 
+        adEl.addEventListener('loadedmetadata', () => { adEl.currentTime = startTimeOffset; }, {once:true});
+        adEl.pause(); 
+      } catch {}
     }
   }
 
@@ -214,7 +219,26 @@
     }, 500); 
   }
 
-  // ---- Strict Sync Ad Engine ------------------------------------------------
+  // ---- True Sync Ad Engine --------------------------------------------------
+  function executeAdVisuals(msg, actualAdRemaining) {
+    hideLoading();
+    isBumperActive = false;
+
+    if (currentAdType === 'image') {
+      liveEl.muted = true;
+      liveEl.volume = 0;
+      showImageLayer(msg.metadata?.click_url);
+    } else {
+      showAdVideoLayer();
+      adEl.volume = 0;
+      safePlay(adEl);
+      animateVolume(adEl, 1, 500); 
+    }
+    
+    showBadgeAndCountdown(actualAdRemaining);
+    reportEvent('ad.impression');
+  }
+
   function playAdFlow(msg) {
     const myToken = ++currentToken;
     clearTimeout(adTimer);
@@ -223,66 +247,59 @@
     currentTriggerId = msg.triggerId; 
     currentAdId = msg.adId;
     currentAdType = inferAdType(msg);
-    
-    // Calculate precise time based strictly on backend state
-    const elapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
-    const globalRemaining = Math.max(0, (msg.duration || 15) - elapsed);
-
     setMode('ad');
-    isBumperActive = true; 
 
     hideImageLayer();
     hideAdVideoLayer();
     hideBadge();
-    
     animateVolume(liveEl, 0, 500);
-    showLoading(); 
 
-    if (currentAdType === 'image') {
-      clearTimeout(imageClearTimeout); 
-      imgAd.src = msg.adUrl; 
-    } else {
-      loadAdVideo(msg.adUrl);
-    }
+    // Calculate absolute timeline
+    const bumperDurationSec = msg.bumper || 7;
+    const actualAdDurationSec = msg.duration || 15;
+    const absoluteElapsedSec = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
 
-    // Dynamic Bumper: Wait up to 7 seconds, OR however much time is left if a viewer joins late
-    const bumperDurationMs = Math.min(7000, globalRemaining * 1000);
+    // SCENARIO 1: We are still inside the Bumper Phase
+    if (absoluteElapsedSec < bumperDurationSec) {
+      isBumperActive = true; 
+      showLoading(); 
 
-    bumperTimer = setTimeout(() => {
-      if (myToken !== currentToken) return;
-      
-      isBumperActive = false; 
-      hideLoading(); 
-      
-      // Recalculate exactly how much time is left for the ad visually AFTER the bumper
-      const currentElapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
-      const adVisualRemaining = Math.max(0, (msg.duration || 15) - currentElapsed);
-      
-      if (adVisualRemaining <= 0.5) {
-        returnToLive();
-        return;
-      }
+      const bumperRemainingSec = bumperDurationSec - absoluteElapsedSec;
 
       if (currentAdType === 'image') {
-        liveEl.muted = true;
-        liveEl.volume = 0;
-        showImageLayer(msg.metadata?.click_url);
+        clearTimeout(imageClearTimeout); 
+        imgAd.src = msg.adUrl; 
       } else {
-        showAdVideoLayer();
-        adEl.currentTime = 0; 
-        adEl.volume = 0;
-        safePlay(adEl);
-        animateVolume(adEl, 1, 500); 
+        loadAdVideo(msg.adUrl, 0);
       }
-      
-      showBadgeAndCountdown(adVisualRemaining);
-      reportEvent('ad.impression');
 
-      adTimer = setTimeout(() => {
-        if (myToken === currentToken) returnToLive();
-      }, adVisualRemaining * 1000);
+      bumperTimer = setTimeout(() => {
+        if (myToken !== currentToken) return;
+        executeAdVisuals(msg, actualAdDurationSec);
+      }, bumperRemainingSec * 1000);
 
-    }, bumperDurationMs); 
+    } 
+    // SCENARIO 2: Viewer joined late, bumper is over, jump directly to ad
+    else {
+      const adElapsedSec = absoluteElapsedSec - bumperDurationSec;
+      const actualAdRemaining = actualAdDurationSec - adElapsedSec;
+
+      if (actualAdRemaining > 0) {
+        if (currentAdType === 'image') {
+          clearTimeout(imageClearTimeout); 
+          imgAd.src = msg.adUrl; 
+          executeAdVisuals(msg, actualAdRemaining);
+        } else {
+          // Pre-seek the video to the exact elapsed point
+          loadAdVideo(msg.adUrl, adElapsedSec);
+          setTimeout(() => {
+             if (myToken === currentToken) executeAdVisuals(msg, actualAdRemaining);
+          }, 200); // Tiny buffer to let HLS lock on
+        }
+      } else {
+        returnToLive();
+      }
+    }
   }
 
   function returnToLive() {
@@ -330,7 +347,7 @@
     if (state.mode === 'ad' && state.adUrl) {
       playAdFlow({
         triggerId: state.triggerId, adId: state.adId, adType: state.adType,
-        adUrl: state.adUrl, duration: state.duration, startAt: state.startAt, metadata: state.metadata,
+        adUrl: state.adUrl, duration: state.duration, bumper: state.bumper, startAt: state.startAt, metadata: state.metadata,
       });
     } else if (currentMode === 'ad') {
       returnToLive();
