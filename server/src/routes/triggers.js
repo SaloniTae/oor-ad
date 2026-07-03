@@ -18,12 +18,8 @@ const insertTrigger = db.prepare(`INSERT INTO triggers (id, tenant_id, channel_i
 const setTriggerStatus = db.prepare('UPDATE triggers SET status = ? WHERE id = ?');
 const activeTrigger = db.prepare(`SELECT * FROM triggers WHERE channel_id = ? AND status = 'active' ORDER BY start_at DESC LIMIT 1`);
 
-// Track auto-return timers by trigger id so /resume can cancel them.
 const timers = new Map();
 
-/**
- * Build a public base URL that will actually resolve for a remote viewer.
- */
 function publicBaseFor(req) {
   const p = cfg.publicUrl || '';
   const isLocalDefault = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(p) || !p;
@@ -47,19 +43,23 @@ r.post('/:id/trigger', validate(TriggerBody), (req, res, next) => {
   const ad = getAd.get(req.body.ad_id);
   if (!ad || ad.tenant_id !== req.tenant.id) return next(new HttpError(404, 'ad_not_found', 'Ad not found'));
 
-  // --- BUMPER PHASE CONFIG ---
+  // --- BUGFIX: Stop overlapping triggers from fighting in the background ---
+  const existing = activeTrigger.get(channel.id);
+  if (existing) {
+    setTriggerStatus.run('superseded', existing.id);
+    const oldTimer = timers.get(existing.id);
+    if (oldTimer) { clearTimeout(oldTimer); timers.delete(existing.id); }
+  }
+
   const BUMPER_DURATION_SEC = 7;
   const actualAdDuration = req.body.duration_seconds || ad.duration_seconds;
   const lead = req.body.lead_ms ?? 500;
   
-  // The server must hold the stream in "ad mode" for the duration of both the bumper AND the ad
   const totalStateDurationMs = (actualAdDuration + BUMPER_DURATION_SEC) * 1000;
-  
   const startAt = Date.now() + lead;
   const endAt = startAt + totalStateDurationMs;
   const triggerId = auth.id();
 
-  // Resolve the source URL viewers should use.
   let adUrl = ad.source;
   if (ad.is_upload) {
     const token = jwt.sign({ typ: 'asset', ad: ad.id }, cfg.jwtSecret, { expiresIn: 3600 });
@@ -71,26 +71,27 @@ r.post('/:id/trigger', validate(TriggerBody), (req, res, next) => {
     triggerId, adId: ad.id, adType: ad.type,
     adUrl,
     duration: actualAdDuration,
-    bumper: BUMPER_DURATION_SEC, // Explicitly tell the True Sync player about the bumper
+    bumper: BUMPER_DURATION_SEC, 
     startAt,
     metadata: JSON.parse(ad.metadata || '{}'),
     ts: Date.now(),
   };
 
   insertTrigger.run(triggerId, req.tenant.id, channel.id, ad.id, actualAdDuration, 'active', startAt, endAt, req.apiKey?.id || 'session', Date.now());
-  
-  // Inject `bumper` into the state so late-joining viewers can do the offset math
   ws.setState(channel.id, { mode: 'ad', triggerId, adId: ad.id, adType: ad.type, adUrl, duration: actualAdDuration, bumper: BUMPER_DURATION_SEC, startAt, metadata: cmd.metadata });
   
   const delivered = ws.broadcast(channel.id, cmd);
 
-  // Auto-return timer (server-side authoritative). Extended to include the 7s bumper.
   const t = setTimeout(() => {
-    setTriggerStatus.run('completed', triggerId);
-    ws.setState(channel.id, { mode: 'live' });
-    ws.broadcast(channel.id, { type: 'command', action: 'resume_live', triggerId, ts: Date.now() });
+    // Only return to live if a newer ad hasn't taken over
+    const checkState = activeTrigger.get(channel.id);
+    if (checkState && checkState.id === triggerId) {
+      setTriggerStatus.run('completed', triggerId);
+      ws.setState(channel.id, { mode: 'live' });
+      ws.broadcast(channel.id, { type: 'command', action: 'resume_live', triggerId, ts: Date.now() });
+      hooks.fire(req.tenant, 'ad.completed', { channel_id: channel.id, trigger_id: triggerId, ad_id: ad.id });
+    }
     timers.delete(triggerId);
-    hooks.fire(req.tenant, 'ad.completed', { channel_id: channel.id, trigger_id: triggerId, ad_id: ad.id });
   }, totalStateDurationMs + lead);
   
   timers.set(triggerId, t);
