@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v10 - True Sync)
+ * Ad Injection - viewer player (production build v11 - Elite Sync & Telemetry)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -18,13 +18,14 @@
 
   if (!wsUrl) return;
 
-  // ---- state ---------------------------------------------------------------
+  // ---- Global State --------------------------------------------------------
   let liveHls = null;
   let adHls   = null;
   let adTimer = null;
   let bumperTimer = null;
   let countdownTimer = null;
   let imageClearTimeout = null;
+  
   let currentMode = 'live';         
   let currentAdType = null;         
   let currentAdId = null;
@@ -37,36 +38,58 @@
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  // ---- audio fade controller -----------------------------------------------
-  function animateVolume(el, targetVolume, durationMs = 500) {
-    if (!el) return;
-    
-    if (!userWantsSound) {
-      el.muted = true;
-      el.volume = targetVolume;
-      return;
-    }
-    
-    el.muted = false;
-    const startVolume = el.volume || 0;
-    const change = targetVolume - startVolume;
-    const startTime = performance.now();
-    
-    function step(currentTime) {
-      const elapsed = currentTime - startTime;
-      const progress = Math.min(elapsed / durationMs, 1);
-      el.volume = startVolume + (change * progress);
+  // ---- Audio Engine (Atomic Interpolator) ----------------------------------
+  // Prevents multiple rapid triggers from overlapping audio fade intervals
+  const AudioEngine = {
+    raf: null,
+    fade(targetLiveVol, targetAdVol, durationMs = 500) {
+      cancelAnimationFrame(this.raf);
       
-      if (progress < 1) {
-        requestAnimationFrame(step);
+      if (!userWantsSound) {
+        liveEl.muted = true; adEl.muted = true;
+        liveEl.volume = targetLiveVol; adEl.volume = targetAdVol;
+        return;
+      }
+      
+      const startLive = liveEl.volume || 0;
+      const startAd = adEl.volume || 0;
+      const startTime = performance.now();
+      
+      // Hardware unlock instantly if fading UP
+      if (targetLiveVol > 0) liveEl.muted = false;
+      if (targetAdVol > 0) adEl.muted = false;
+
+      const step = (now) => {
+        const progress = Math.min((now - startTime) / durationMs, 1);
+        liveEl.volume = startLive + (targetLiveVol - startLive) * progress;
+        adEl.volume = startAd + (targetAdVol - startAd) * progress;
+
+        if (progress < 1) {
+          this.raf = requestAnimationFrame(step);
+        } else {
+          // Hardware lock explicitly at 0 to prevent ghost bleeding
+          if (targetLiveVol === 0) liveEl.muted = true;
+          if (targetAdVol === 0) adEl.muted = true;
+        }
+      };
+      this.raf = requestAnimationFrame(step);
+    },
+    
+    // Snaps audio to correct mathematical state based on current logic
+    syncHardware() {
+      if (currentMode === 'live') {
+        this.fade(1, 0, 0);
+      } else if (isBumperActive) {
+        this.fade(0, 0, 0);
       } else {
-        if (targetVolume === 0) el.muted = true;
+        this.fade(0, currentAdType === 'image' ? 0 : 1, 0);
       }
     }
-    requestAnimationFrame(step);
-  }
+  };
 
   function safePlay(el) {
+    if (el === adEl && currentAdType === 'image') return; // Image ads never play audio
+    
     el.volume = userWantsSound ? 1 : 0;
     el.muted = !userWantsSound;
     const playPromise = el.play();
@@ -76,8 +99,7 @@
         if (e.name === 'NotAllowedError' && userWantsSound) {
           userWantsSound = false;
           unmuteBtn.textContent = 'Tap to Unmute';
-          el.muted = true;
-          el.volume = 0;
+          AudioEngine.syncHardware();
           el.play().catch(()=>{}); 
         }
       });
@@ -87,25 +109,41 @@
   unmuteBtn.onclick = () => {
     userWantsSound = !userWantsSound;
     unmuteBtn.textContent = userWantsSound ? 'Mute' : 'Tap to Unmute';
+    AudioEngine.syncHardware();
     
-    if (currentMode === 'live') {
-      liveEl.muted = !userWantsSound;
-      liveEl.volume = userWantsSound ? 1 : 0;
-      adEl.muted = true;
-      if (userWantsSound) liveEl.play().catch(()=>{});
-    } else if (isBumperActive) {
-      liveEl.muted = true; 
-      adEl.muted = true;
-    } else {
-      liveEl.muted = true; 
-      liveEl.volume = 0;
-      if (currentAdType !== 'image') {
-        adEl.muted = !userWantsSound;
-        adEl.volume = userWantsSound ? 1 : 0;
-        if (userWantsSound) adEl.play().catch(()=>{});
-      }
-    }
+    const target = currentMode === 'live' ? liveEl : (currentAdType !== 'image' && !isBumperActive ? adEl : null);
+    if (target && userWantsSound) target.play().catch(()=>{});
   };
+
+  // ---- Telemetry & Watchdog ------------------------------------------------
+  // Reports playback freezes and state errors directly to the backend
+  function attachWatchdog(el, prefix) {
+    let errorCooldown = false;
+    
+    const report = (type, detail) => {
+      if (errorCooldown) return;
+      errorCooldown = true; setTimeout(() => errorCooldown = false, 5000);
+      reportEvent(`error: ${prefix}_${type}`, { detail });
+    };
+
+    el.addEventListener('waiting', () => {
+      if (prefix === 'live' && currentMode === 'live') report('freeze', 'buffer starved');
+      if (prefix === 'ad' && currentMode === 'ad' && !isBumperActive) report('freeze', 'ad buffer starved');
+    });
+    
+    el.addEventListener('error', () => report('playback_failed', el.error?.message));
+
+    // OS Background Suspension Shield: 
+    // Browsers pause background tags. We MUST aggressively wake it up to prevent silent HLS death.
+    el.addEventListener('pause', () => {
+      if (prefix === 'live' && liveUrl && !el.ended) {
+        el.play().catch(e => report('autoplay_blocked', e.message));
+      }
+    });
+  }
+  
+  attachWatchdog(liveEl, 'live');
+  attachWatchdog(adEl, 'ad');
 
   // ---- HLS ------------------------------------------------------------------
   function newHlsConfig() {
@@ -157,7 +195,7 @@
       adHls.attachMedia(adEl);
       adHls.on(Hls.Events.MEDIA_ATTACHED, () => {
         adHls.loadSource(url);
-        adEl.currentTime = startTimeOffset; // Sync late joiner
+        adEl.currentTime = startTimeOffset; 
         adEl.pause(); 
       });
       adHls.on(Hls.Events.ERROR, (_e, d) => {
@@ -181,7 +219,7 @@
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
   }
 
-  // ---- UI helpers -----------------------------------------------------------
+  // ---- DOM GC Helpers -------------------------------------------------------
   function showBadgeAndCountdown(duration) {
     badge.classList.add('show');
     let remaining = Math.ceil(duration);
@@ -198,17 +236,8 @@
     clearInterval(countdownTimer);
   }
 
-  function showLoading() { loadingEl && loadingEl.classList.add('show'); }
   function hideLoading() { loadingEl && loadingEl.classList.remove('show'); }
-
-  function showAdVideoLayer() { adEl.classList.add('on'); }
   function hideAdVideoLayer() { adEl.classList.remove('on'); }
-
-  function showImageLayer(clickUrl) {
-    if (clickUrl) imgLink.setAttribute('href', clickUrl);
-    else          imgLink.removeAttribute('href');
-    imgLink.classList.add('on');
-  }
 
   function hideImageLayer() {
     imgLink.classList.remove('on');
@@ -219,6 +248,19 @@
     }, 500); 
   }
 
+  // Completely garbage collects any active ad UI/timers to guarantee zero overlap
+  function abortCurrentAd() {
+    clearTimeout(adTimer);
+    clearTimeout(bumperTimer);
+    isBumperActive = false;
+    
+    hideBadge();
+    hideLoading();
+    hideImageLayer();
+    hideAdVideoLayer();
+    unloadAdVideo();
+  }
+
   // ---- True Sync Ad Engine --------------------------------------------------
   function executeAdVisuals(msg, actualAdRemaining) {
     hideLoading();
@@ -227,12 +269,14 @@
     if (currentAdType === 'image') {
       liveEl.muted = true;
       liveEl.volume = 0;
-      showImageLayer(msg.metadata?.click_url);
+      if (msg.metadata?.click_url) imgLink.setAttribute('href', msg.metadata.click_url);
+      else imgLink.removeAttribute('href');
+      imgLink.classList.add('on');
     } else {
-      showAdVideoLayer();
+      adEl.classList.add('on');
       adEl.volume = 0;
       safePlay(adEl);
-      animateVolume(adEl, 1, 500); 
+      AudioEngine.fade(0, 1, 500); 
     }
     
     showBadgeAndCountdown(actualAdRemaining);
@@ -241,29 +285,23 @@
 
   function playAdFlow(msg) {
     const myToken = ++currentToken;
-    clearTimeout(adTimer);
-    clearTimeout(bumperTimer);
+    abortCurrentAd(); // Instantly destroy any previous ad that got overridden
     
     currentTriggerId = msg.triggerId; 
     currentAdId = msg.adId;
     currentAdType = inferAdType(msg);
     setMode('ad');
+    isBumperActive = true; 
 
-    hideImageLayer();
-    hideAdVideoLayer();
-    hideBadge();
-    animateVolume(liveEl, 0, 500);
+    AudioEngine.fade(0, 0, 500); // Crossfade Live Audio OUT
+    loadingEl.classList.add('show'); // Show "We'll be right back"
 
-    // Calculate absolute timeline
     const bumperDurationSec = msg.bumper || 7;
     const actualAdDurationSec = msg.duration || 15;
     const absoluteElapsedSec = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
 
-    // SCENARIO 1: We are still inside the Bumper Phase
+    // BUMPER PHASE
     if (absoluteElapsedSec < bumperDurationSec) {
-      isBumperActive = true; 
-      showLoading(); 
-
       const bumperRemainingSec = bumperDurationSec - absoluteElapsedSec;
 
       if (currentAdType === 'image') {
@@ -279,55 +317,45 @@
       }, bumperRemainingSec * 1000);
 
     } 
-    // SCENARIO 2: Viewer joined late, bumper is over, jump directly to ad
+    // LATE JOINER RECOVERY PHASE
     else {
+      isBumperActive = false;
       const adElapsedSec = absoluteElapsedSec - bumperDurationSec;
       const actualAdRemaining = actualAdDurationSec - adElapsedSec;
 
-      if (actualAdRemaining > 0) {
+      if (actualAdRemaining > 0.5) {
         if (currentAdType === 'image') {
           clearTimeout(imageClearTimeout); 
           imgAd.src = msg.adUrl; 
           executeAdVisuals(msg, actualAdRemaining);
         } else {
-          // Pre-seek the video to the exact elapsed point
           loadAdVideo(msg.adUrl, adElapsedSec);
           setTimeout(() => {
              if (myToken === currentToken) executeAdVisuals(msg, actualAdRemaining);
-          }, 200); // Tiny buffer to let HLS lock on
+          }, 200); 
         }
       } else {
         returnToLive();
       }
     }
+
+    // Schedule strict expiration based purely on math, regardless of what phase we started in
+    const totalRemainingSec = (bumperDurationSec + actualAdDurationSec) - absoluteElapsedSec;
+    adTimer = setTimeout(() => {
+      if (myToken === currentToken) returnToLive();
+    }, totalRemainingSec * 1000);
   }
 
   function returnToLive() {
-    clearTimeout(adTimer); adTimer = null;
-    clearTimeout(bumperTimer); bumperTimer = null;
-    isBumperActive = false;
-    
-    if (currentMode === 'live' && !currentAdType) {
-      hideBadge(); hideLoading(); hideAdVideoLayer(); hideImageLayer();
-      return;
-    }
-
     const wasVideoAd = (currentAdType === 'video' || currentAdType === 'hls');
+    abortCurrentAd();
+    
+    if (currentMode === 'live' && !currentAdType) return;
+
     currentAdType = null; currentAdId = null; currentTriggerId = null;
     setMode('live');
     
-    hideBadge();
-    hideLoading();
-    
-    if (wasVideoAd) {
-      animateVolume(adEl, 0, 500);
-      hideAdVideoLayer();
-      setTimeout(() => unloadAdVideo(), 500); 
-    } else {
-      hideImageLayer();
-    }
-    
-    animateVolume(liveEl, 1, 500);
+    AudioEngine.fade(1, 0, 500);
     safePlay(liveEl);
     
     reportEvent('ad.complete');
