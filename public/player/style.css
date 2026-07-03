@@ -1,135 +1,128 @@
-/*
- * Player – dark, minimal, responsive. Uses fixed z-index roles instead of
- * cross-fading two videos: no visible overlap, no reload flash on ad end.
- */
 :root {
-  --bg-0: #05070d;
-  --bg-1: #0a0e1a;
-  --glass-bg:     rgba(255, 255, 255, 0.045);
-  --glass-border: rgba(255, 255, 255, 0.09);
-  --text:         #f4f6fb;
-  --text-muted:   #9aa3b2;
-  --brand:        #ff3b3b;
-  --radius:       12px;
+  --brand: #ff3b3b;
 }
 
-* { box-sizing: border-box; }
+* { 
+  box-sizing: border-box; 
+  margin: 0; 
+  padding: 0; 
+}
+
 html, body {
-  margin: 0; padding: 0; min-height: 100vh; color: var(--text);
-  background:
-    radial-gradient(900px 600px at -10% -20%, rgba(96,91,255,0.13), transparent 55%),
-    radial-gradient(700px 600px at 110% 110%, rgba(255,60,130,0.09), transparent 55%),
-    linear-gradient(180deg, var(--bg-0), var(--bg-1));
-  background-attachment: fixed;
+  width: 100%; 
+  height: 100%;
+  background: #000;
+  overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 12px clamp(12px, 3vw, 24px);
-  background: rgba(10, 14, 26, 0.7);
-  backdrop-filter: saturate(140%) blur(20px);
-  -webkit-backdrop-filter: saturate(140%) blur(20px);
-  border-bottom: 1px solid var(--glass-border);
-}
-.brand {
-  font-weight: 700; letter-spacing: 0.08em; font-size: 12px;
-  color: var(--brand);
-  display: flex; align-items: center; gap: 8px;
-}
-.brand::before {
-  content: ""; width: 8px; height: 8px; border-radius: 50%;
-  background: var(--brand); box-shadow: 0 0 12px rgba(255, 59, 59, 0.6);
-  animation: livePulse 1.6s ease-in-out infinite;
-}
-@keyframes livePulse { 50% { opacity: 0.4; transform: scale(0.85); } }
-.status {
-  font-size: 12px; color: var(--text-muted);
-  padding: 4px 12px; border-radius: 999px;
-  background: var(--glass-bg); border: 1px solid var(--glass-border);
-}
-.status.ok  { color: #86efac; border-color: rgba(74,222,128,0.3); }
-.status.err { color: #ffbec4; border-color: rgba(255,77,94,0.3); }
-
-main {
-  max-width: 1200px; margin: 24px auto; padding: 0 clamp(12px, 3vw, 20px);
-}
 .stage {
-  position: relative; width: 100%; aspect-ratio: 16 / 9;
-  background: #000; border-radius: var(--radius); overflow: hidden;
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  background: #000;
 }
 
 /* ============================================================================
-   Video layers – fixed roles.
-   videoA (v-live): the live stream. Always at the bottom, always visible.
-   videoB (v-ad)  : the ad. Sits above live, hidden by default. `.on` reveals.
-   No cross-fade: hard visibility flip means zero overlap during transitions.
+   Video layers - Cross-fading setup
+   videoA (v-live): Always at the bottom, always visible.
+   videoB (v-ad)  : Fades in over live via opacity transition.
    ============================================================================ */
 .v {
   position: absolute; inset: 0; width: 100%; height: 100%;
   object-fit: contain; background: #000;
 }
 .v-live { z-index: 1; }
-.v-ad   { z-index: 2; visibility: hidden; pointer-events: none; }
-.v-ad.on { visibility: visible; pointer-events: auto; }
 
-/* Image ad overlay – on top of both videos. */
+.v-ad {
+  z-index: 2;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.5s ease, visibility 0.5s ease;
+}
+.v-ad.on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+/* Image ad overlay */
 .img-layer {
   position: absolute; inset: 0; z-index: 3;
   display: flex; align-items: center; justify-content: center;
   background: #000; text-decoration: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.5s ease, visibility 0.5s ease;
+}
+.img-layer.on {
+  opacity: 1;
+  visibility: visible;
 }
 .img-layer img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
-/* Ad badge + loading spinner – top of the stack. */
+/* Premium Glassmorphism Ad Badge */
 .badge {
-  position: absolute; top: 14px; left: 16px; z-index: 4;
-  padding: 6px 12px; border-radius: 999px;
-  background: linear-gradient(135deg, #ff4d6a, #ff8a3d);
-  color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
-  box-shadow: 0 6px 22px rgba(255, 77, 106, 0.35);
-  opacity: 0; transition: opacity 160ms linear;
+  position: absolute; bottom: 32px; left: 32px; z-index: 4;
+  padding: 10px 18px; border-radius: 8px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #fff; font-size: 14px; font-weight: 500; letter-spacing: 0.02em;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+  opacity: 0; visibility: hidden;
+  transition: opacity 0.4s ease, visibility 0.4s ease, transform 0.4s ease;
+  transform: translateY(10px);
 }
-.badge.show { opacity: 1; }
+.badge.show { 
+  opacity: 1; 
+  visibility: visible; 
+  transform: translateY(0);
+}
+.badge span { font-weight: 700; color: #fff; }
+
+/* Centered Glass Loading Spinner */
 .loading {
-  position: absolute; top: 14px; right: 16px; z-index: 5;
-  padding: 6px 12px; border-radius: 999px;
-  background: rgba(0, 0, 0, 0.65); color: #eaeaea;
-  font-size: 11px; letter-spacing: 0.03em;
-  display: inline-flex; align-items: center; gap: 8px;
-  border: 1px solid var(--glass-border);
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5;
+  padding: 14px 24px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff; font-size: 14px; font-weight: 500;
+  display: inline-flex; align-items: center; gap: 12px;
+  opacity: 0; visibility: hidden;
+  transition: opacity 0.3s ease, visibility 0.3s ease;
 }
-.loading::before {
-  content: ""; width: 10px; height: 10px; border-radius: 50%;
+.loading.show { opacity: 1; visibility: visible; }
+
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%;
   border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff;
-  animation: spin 700ms linear infinite;
+  animation: spin 0.75s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-.hidden { display: none !important; }
 
-.controls { margin-top: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
-button {
-  padding: 8px 16px; border-radius: 999px;
-  background: rgba(255,255,255,0.08); border: 1px solid var(--glass-border);
-  color: var(--text); font-family: inherit; font-size: 13px; font-weight: 500;
-  cursor: pointer; transition: background .15s, border-color .15s;
+/* Floating Unmute Button */
+.unmute-btn {
+  position: absolute; top: 24px; right: 24px; z-index: 10;
+  padding: 10px 20px; border-radius: 999px;
+  background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255,255,255,0.15);
+  color: #fff; font-family: inherit; font-size: 13px; font-weight: 600;
+  cursor: pointer; transition: background 0.2s, border-color 0.2s, transform 0.1s;
 }
-button:hover { background: rgba(255,255,255,0.14); border-color: rgba(255,255,255,0.18); }
-
-footer {
-  max-width: 1200px; margin: 12px auto 40px;
-  padding: 0 clamp(12px, 3vw, 20px);
-  color: var(--text-muted); font-size: 12px;
+.unmute-btn:hover { 
+  background: rgba(0, 0, 0, 0.65); 
+  border-color: rgba(255,255,255,0.3); 
 }
-.meta { display: flex; gap: 20px; flex-wrap: wrap; }
-.meta b { color: var(--text); font-weight: 500; }
+.unmute-btn:active {
+  transform: scale(0.97);
+}
 
 @media (max-width: 640px) {
-  header { padding: 10px 14px; }
-  main   { margin: 12px auto; }
-  .badge { top: 10px; left: 12px; font-size: 10px; padding: 5px 10px; }
-  .loading { top: 10px; right: 12px; font-size: 10px; padding: 5px 10px; }
+  .badge { bottom: 20px; left: 20px; font-size: 12px; padding: 8px 14px; }
+  .unmute-btn { top: 16px; right: 16px; font-size: 12px; padding: 8px 16px; }
 }
