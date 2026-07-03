@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v3)
+ * Ad Injection - viewer player (production build v4)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -29,31 +29,79 @@
   let currentAdId = null;
   let currentTriggerId = null;
   let currentToken = 0;             
-  let userWantsSound = false;       
+  
+  // Default to true. We aggressively try to play unmuted first.
+  let userWantsSound = true;       
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  // ---- audio / unmute button ------------------------------------------------
-  function applyAudioState() {
-    if (currentMode === 'ad' && currentAdType === 'image') {
-      liveEl.muted = true;
-      adEl.muted   = true;
-    } else if (currentMode === 'ad') {   
-      liveEl.muted = true;
-      adEl.muted   = !userWantsSound;
-    } else {                              
-      liveEl.muted = !userWantsSound;
-      adEl.muted   = true;
+  // ---- audio fade controller ------------------------------------------------
+  function animateVolume(el, targetVolume, durationMs = 500) {
+    if (!el) return;
+    
+    // If user enforces mute, snap to targets without animation
+    if (!userWantsSound) {
+      el.muted = true;
+      el.volume = targetVolume;
+      return;
+    }
+    
+    el.muted = false;
+    const startVolume = el.volume || 0;
+    const change = targetVolume - startVolume;
+    const startTime = performance.now();
+    
+    function step(currentTime) {
+      const elapsed = currentTime - startTime;
+      const progress = Math.min(elapsed / durationMs, 1);
+      el.volume = startVolume + (change * progress);
+      
+      if (progress < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  // Attempt playback and fallback to muted if browser policies block it
+  function safePlay(el) {
+    el.volume = userWantsSound ? 1 : 0;
+    el.muted = !userWantsSound;
+    const playPromise = el.play();
+    
+    if (playPromise !== undefined) {
+      playPromise.catch(e => {
+        if (e.name === 'NotAllowedError' && userWantsSound) {
+          userWantsSound = false;
+          unmuteBtn.textContent = 'Tap to Unmute';
+          el.muted = true;
+          el.volume = 0;
+          el.play().catch(()=>{}); // Try again muted
+        }
+      });
     }
   }
 
   unmuteBtn.onclick = () => {
     userWantsSound = !userWantsSound;
     unmuteBtn.textContent = userWantsSound ? 'Mute' : 'Tap to Unmute';
-    applyAudioState();
+    
+    if (currentMode === 'live') {
+      liveEl.muted = !userWantsSound;
+      liveEl.volume = userWantsSound ? 1 : 0;
+      adEl.muted = true;
+    } else {
+      liveEl.muted = true; 
+      liveEl.volume = 0;
+      if (currentAdType !== 'image') {
+        adEl.muted = !userWantsSound;
+        adEl.volume = userWantsSound ? 1 : 0;
+      }
+    }
+    
     const audible = (currentMode === 'ad' && currentAdType !== 'image') ? adEl : liveEl;
-    audible.play().catch(() => {});
+    if (userWantsSound) {
+      audible.play().catch(() => {});
+    }
   };
 
   // ---- HLS ------------------------------------------------------------------
@@ -89,8 +137,7 @@
       liveEl.src = liveUrl;
       try { liveEl.load(); } catch {}
     }
-    applyAudioState();
-    liveEl.play().catch(() => {});
+    safePlay(liveEl);
   }
 
   function loadAdVideo(url, onReady) {
@@ -130,7 +177,7 @@
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
   }
 
-  // ---- UI helpers (Updated for CSS Fades) -----------------------------------
+  // ---- UI helpers -----------------------------------------------------------
   function showBadgeAndCountdown(duration) {
     badge.classList.add('show');
     let remaining = Math.ceil(duration);
@@ -161,7 +208,6 @@
 
   function hideImageLayer() {
     imgLink.classList.remove('on');
-    // Wait for the 500ms CSS opacity transition to complete before clearing src
     setTimeout(() => {
       imgAd.removeAttribute('src');
       imgAd.onload = null; imgAd.onerror = null;
@@ -174,13 +220,19 @@
     hideImageLayer();
     setMode('ad');
     showLoading();
+    
+    // Cross-fade out the live stream audio
+    animateVolume(liveEl, 0);
 
     loadAdVideo(adUrl, () => {
       if (myToken !== currentToken) return;
       hideLoading();
-      applyAudioState();
       showAdVideoLayer();
-      adEl.play().catch(() => {});
+      
+      adEl.volume = 0;
+      safePlay(adEl);
+      animateVolume(adEl, 1); // Cross-fade in the ad audio
+      
       showBadgeAndCountdown(duration);
       reportEvent('ad.impression');
     });
@@ -197,7 +249,9 @@
     unloadAdVideo();
     setMode('ad');
     showLoading();
-    applyAudioState();
+    
+    // Cross-fade out the live stream audio for the ad break
+    animateVolume(liveEl, 0);
 
     const clickUrl = meta && meta.click_url ? meta.click_url : null;
 
@@ -242,10 +296,14 @@
     hideImageLayer();
     hideAdVideoLayer();
     
-    if (wasVideoAd) unloadAdVideo();
+    if (wasVideoAd) {
+      animateVolume(adEl, 0);
+      setTimeout(() => unloadAdVideo(), 500); 
+    }
     
-    applyAudioState();
-    liveEl.play().catch(() => {});
+    animateVolume(liveEl, 1);
+    safePlay(liveEl);
+    
     reportEvent('ad.complete');
   }
 
