@@ -26,8 +26,6 @@ html, body {
 
 /* ============================================================================
    Video layers - Cross-fading setup
-   videoA (v-live): Always at the bottom, always visible.
-   videoB (v-ad)  : Fades in over live via opacity transition.
    ============================================================================ */
 .v {
   position: absolute; inset: 0; width: 100%; height: 100%;
@@ -63,16 +61,15 @@ html, body {
 }
 .img-layer img { max-width: 100%; max-height: 100%; object-fit: contain; }
 
-/* Premium Glassmorphism Ad Badge */
+/* Ad Timer & Loading State occupying the exact same position */
 .badge {
   position: absolute; bottom: 32px; left: 32px; z-index: 4;
   padding: 10px 18px; border-radius: 8px;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.28); /* bg-black/28 */
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #fff; font-size: 14px; font-weight: 500; letter-spacing: 0.02em;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
   opacity: 0; visibility: hidden;
   transition: opacity 0.4s ease, visibility 0.4s ease, transform 0.4s ease;
   transform: translateY(10px);
@@ -84,38 +81,19 @@ html, body {
 }
 .badge span { font-weight: 700; color: #fff; }
 
-/* Centered Glass Loading Spinner */
-.loading {
-  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 5;
-  padding: 14px 24px; border-radius: 999px;
-  background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-  color: #fff; font-size: 14px; font-weight: 500;
-  display: inline-flex; align-items: center; gap: 12px;
-  opacity: 0; visibility: hidden;
-  transition: opacity 0.3s ease, visibility 0.3s ease;
-}
-.loading.show { opacity: 1; visibility: visible; }
-
-.spinner {
-  width: 16px; height: 16px; border-radius: 50%;
-  border: 2px solid rgba(255,255,255,0.25); border-top-color: #fff;
-  animation: spin 0.75s linear infinite;
-}
-@keyframes spin { to { transform: rotate(360deg); } }
-
 /* Floating Unmute Button */
 .unmute-btn {
   position: absolute; top: 24px; right: 24px; z-index: 10;
   padding: 10px 20px; border-radius: 999px;
-  background: rgba(0, 0, 0, 0.45); backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  background: rgba(0, 0, 0, 0.28); /* bg-black/28 */
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255,255,255,0.15);
   color: #fff; font-family: inherit; font-size: 13px; font-weight: 600;
   cursor: pointer; transition: background 0.2s, border-color 0.2s, transform 0.1s;
 }
 .unmute-btn:hover { 
-  background: rgba(0, 0, 0, 0.65); 
+  background: rgba(0, 0, 0, 0.45); 
   border-color: rgba(255,255,255,0.3); 
 }
 .unmute-btn:active {
