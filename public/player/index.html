@@ -10,24 +10,21 @@
 <body>
   <div class="stage">
     <!-- Raw video taking the entire screen -->
-    <video id="videoA" class="v v-live" playsinline autoplay muted preload="auto"></video>
-    <video id="videoB" class="v v-ad"   playsinline           muted preload="auto"></video>
+    <video id="videoA" class="v v-live" playsinline autoplay preload="auto"></video>
+    <video id="videoB" class="v v-ad"   playsinline autoplay preload="auto"></video>
 
     <a id="imgLink" class="img-layer" target="_blank" rel="noopener">
       <img id="imgAd" alt="advertisement" />
     </a>
 
-    <!-- Premium UI overlays -->
+    <!-- Premium UI overlays occupying the same location -->
+    <div id="loading" class="badge">We'll be right back</div>
     <div id="badge" class="badge">Ad will end in <span id="countdown">0</span>s</div>
-    
-    <div id="loading" class="loading">
-      <div class="spinner"></div> Loading ad...
-    </div>
     
     <button id="unmute" class="unmute-btn">Tap to Unmute</button>
   </div>
 
-  <!-- Hidden elements to maintain app.js state references without crashing -->
+  <!-- Hidden elements to maintain app.js state references -->
   <div style="display:none;">
     <span id="status"></span><span id="mode"></span><span id="cid"></span><span id="ch"></span>
   </div>
