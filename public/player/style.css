@@ -65,14 +65,14 @@ html, body {
 .badge {
   position: absolute; bottom: 32px; left: 32px; z-index: 4;
   padding: 10px 18px; border-radius: 8px;
-  background: rgba(0, 0, 0, 0.28); /* bg-black/28 */
+  background: rgba(0, 0, 0, 0.28); 
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: #fff; font-size: 14px; font-weight: 500; letter-spacing: 0.02em;
   opacity: 0; visibility: hidden;
-  /* Removed transform for a pure, stationary fade */
-  transition: opacity 0.4s ease, visibility 0.4s ease;
+  /* Synced precisely to 0.5s to match JS audio crossfade */
+  transition: opacity 0.5s ease, visibility 0.5s ease;
 }
 .badge.show { 
   opacity: 1; 
@@ -84,7 +84,7 @@ html, body {
 .unmute-btn {
   position: absolute; top: 24px; right: 24px; z-index: 10;
   padding: 10px 20px; border-radius: 999px;
-  background: rgba(0, 0, 0, 0.28); /* bg-black/28 */
+  background: rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
   border: 1px solid rgba(255,255,255,0.15);
