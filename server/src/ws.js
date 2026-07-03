@@ -1,13 +1,3 @@
-/**
- * WebSocket hub - viewer connections are scoped to a channel + carry a JWT
- * viewer-token issued by the API. This prevents random clients from listening
- * to channels they weren't authorized for.
- *
- * Protocol:
- *   Client connects to /ws?channel=<slug>&token=<viewerJwt>
- *   Server sends:  {type:'welcome',...}, {type:'state', state}, and any {type:'command'} broadcasts.
- *   Client sends:  {type:'hello'} (request state re-send), {type:'event', name, meta} (analytics).
- */
 const url = require('url');
 const crypto = require('crypto');
 const { WebSocketServer } = require('ws');
@@ -20,10 +10,9 @@ const insertEvent = db.prepare(`
   INSERT INTO events (tenant_id, channel_id, ad_id, trigger_id, viewer_id, event_type, metadata, created_at)
   VALUES (?,?,?,?,?,?,?,?)
 `);
+const updateTriggerStatus = db.prepare('UPDATE triggers SET status = ? WHERE id = ?');
 
-// channelId -> Set<ws>
 const rooms = new Map();
-// channelId -> last known state (persists between connects)
 const stateByChannel = new Map();
 
 function join(channelId, ws) {
@@ -84,7 +73,6 @@ function attach(server, log) {
     });
     safeSend(ws, { type: 'state', state: getState(channel.id) });
 
-    // Rate-limit inbound messages so viewers can't flood.
     let budget = 40;
     const tick = setInterval(() => { budget = 40; }, 10_000);
 
@@ -96,8 +84,16 @@ function attach(server, log) {
       if (m.type === 'event') {
         const name = String(m.name || '').slice(0, 64);
         if (!name) return;
+        
         insertEvent.run(channel.tenant_id, channel.id, m.adId || null, m.triggerId || null,
                         ws.viewerId, name, m.meta ? JSON.stringify(m.meta).slice(0, 1024) : null, auth.now());
+
+        // --- INDUSTRY STANDARD TELEMETRY: Bubble player errors to the Dashboard ---
+        if (name.startsWith('error:') && m.triggerId) {
+          try {
+            updateTriggerStatus.run(name.substring(0, 50), m.triggerId);
+          } catch (e) { /* silent fail for db locks */ }
+        }
       }
     });
 
