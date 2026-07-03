@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v5)
+ * Ad Injection - viewer player (production build v6 - 7s Bumper Engine)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -11,7 +11,6 @@
   const imgLink = $('imgLink'), imgAd = $('imgAd'), loadingEl = $('loading');
   const unmuteBtn = $('unmute');
 
-  // ---- config resolution ---------------------------------------------------
   const qs = new URLSearchParams(location.search);
   const cfg = window.AD_INJECTION_CONFIG || {};
   const wsUrl   = cfg.wsUrl  || qs.get('ws');
@@ -23,6 +22,7 @@
   let liveHls = null;
   let adHls   = null;
   let adTimer = null;
+  let bumperTimer = null;
   let countdownTimer = null;
   let currentMode = 'live';         
   let currentAdType = null;         
@@ -30,17 +30,15 @@
   let currentTriggerId = null;
   let currentToken = 0;             
   
-  // Default to true. We aggressively try to play unmuted first.
   let userWantsSound = true;       
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  // ---- audio fade controller (Live Stream Only) ----------------------------
+  // ---- audio fade controller (101% Bulletproof) ----------------------------
   function animateVolume(el, targetVolume, durationMs = 500) {
     if (!el) return;
     
-    // If user enforces mute, snap to targets without animation
     if (!userWantsSound) {
       el.muted = true;
       el.volume = targetVolume;
@@ -57,12 +55,16 @@
       const progress = Math.min(elapsed / durationMs, 1);
       el.volume = startVolume + (change * progress);
       
-      if (progress < 1) requestAnimationFrame(step);
+      if (progress < 1) {
+        requestAnimationFrame(step);
+      } else {
+        // HARD LOCK: If volume hits 0, disable track completely to stop background bleed
+        if (targetVolume === 0) el.muted = true;
+      }
     }
     requestAnimationFrame(step);
   }
 
-  // Attempt playback and fallback to muted if browser policies block it
   function safePlay(el) {
     el.volume = userWantsSound ? 1 : 0;
     el.muted = !userWantsSound;
@@ -75,7 +77,7 @@
           unmuteBtn.textContent = 'Tap to Unmute';
           el.muted = true;
           el.volume = 0;
-          el.play().catch(()=>{}); // Try again muted
+          el.play().catch(()=>{}); 
         }
       });
     }
@@ -89,18 +91,17 @@
       liveEl.muted = !userWantsSound;
       liveEl.volume = userWantsSound ? 1 : 0;
       adEl.muted = true;
+      if (userWantsSound) liveEl.play().catch(()=>{});
     } else {
+      // Force live completely silent if in bumper or ad mode
       liveEl.muted = true; 
       liveEl.volume = 0;
+      
       if (currentAdType !== 'image') {
         adEl.muted = !userWantsSound;
         adEl.volume = userWantsSound ? 1 : 0;
+        if (userWantsSound) adEl.play().catch(()=>{});
       }
-    }
-    
-    const audible = (currentMode === 'ad' && currentAdType !== 'image') ? adEl : liveEl;
-    if (userWantsSound) {
-      audible.play().catch(() => {});
     }
   };
 
@@ -140,20 +141,11 @@
     safePlay(liveEl);
   }
 
-  function loadAdVideo(url, onReady) {
+  // Preloads the video silently in the background without playing it
+  function loadAdVideo(url) {
     if (adHls) { try { adHls.destroy(); } catch {} adHls = null; }
     try { adEl.pause(); } catch {}
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
-
-    const finishOnce = (() => {
-      let called = false;
-      return () => { if (called) return; called = true; onReady(); };
-    })();
-    const onReadyEvent = () => finishOnce();
-
-    adEl.addEventListener('canplay',     onReadyEvent, { once: true });
-    adEl.addEventListener('loadeddata',  onReadyEvent, { once: true });
-    setTimeout(() => finishOnce(), 5000);
 
     const isHls = /\.m3u8(\?|$)/i.test(url);
     if (isHls && window.Hls && Hls.isSupported()) {
@@ -214,73 +206,73 @@
     }, 500); 
   }
 
-  // ---- ad flows -------------------------------------------------------------
-  function playVideoAd(adUrl, duration) {
+  // ---- Ad Pre-Roll Engine ---------------------------------------------------
+  function playAdFlow(msg) {
     const myToken = ++currentToken;
+    clearTimeout(adTimer);
+    clearTimeout(bumperTimer);
+    
+    currentTriggerId = msg.triggerId; 
+    currentAdId = msg.adId;
+    currentAdType = inferAdType(msg);
+    
+    const elapsed = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
+    const remaining = Math.max(1, (msg.duration || 15) - elapsed);
+
+    setMode('ad');
+
+    // 1. Instantly hide any old UI
     hideImageLayer();
-    setMode('ad');
-    showLoading();
-    
-    // Cross-fade out the live stream audio
-    animateVolume(liveEl, 0);
-
-    loadAdVideo(adUrl, () => {
-      if (myToken !== currentToken) return;
-      hideLoading();
-      showAdVideoLayer();
-      
-      // Play ad audio instantly without fading
-      safePlay(adEl);
-      
-      showBadgeAndCountdown(duration);
-      reportEvent('ad.impression');
-    });
-
-    clearTimeout(adTimer);
-    adTimer = setTimeout(() => {
-      if (myToken === currentToken) returnToLive();
-    }, duration * 1000);
-  }
-
-  function playImageAd(imgUrl, duration, meta) {
-    const myToken = ++currentToken;
     hideAdVideoLayer();
-    unloadAdVideo();
-    setMode('ad');
-    showLoading();
+    hideBadge();
     
-    // Cross-fade out the live stream audio for the image break
-    animateVolume(liveEl, 0);
+    // 2. Crossfade Live Audio OUT (Bumper Phase starts)
+    animateVolume(liveEl, 0, 500);
 
-    const clickUrl = meta && meta.click_url ? meta.click_url : null;
+    // 3. Show "We'll be right back"
+    showLoading(); 
 
-    const reveal = () => {
+    // 4. Preload Assets purely in the background (No UI blocks)
+    if (currentAdType === 'image') {
+      imgAd.src = msg.adUrl; 
+    } else {
+      loadAdVideo(msg.adUrl);
+    }
+
+    // 5. Wait exactly 7 seconds, then crossfade into the Ad visually
+    bumperTimer = setTimeout(() => {
       if (myToken !== currentToken) return;
-      hideLoading();
-      showImageLayer(clickUrl);
-      showBadgeAndCountdown(duration);
+      
+      hideLoading(); // Fade out bumper
+      
+      if (currentAdType === 'image') {
+        // Hardware lock Live Audio again just in case
+        liveEl.muted = true;
+        liveEl.volume = 0;
+        showImageLayer(msg.metadata?.click_url);
+      } else {
+        showAdVideoLayer();
+        // Start video muted, then perfectly crossfade audio IN over 500ms
+        adEl.volume = 0;
+        safePlay(adEl);
+        animateVolume(adEl, 1, 500); 
+      }
+      
+      showBadgeAndCountdown(remaining);
       reportEvent('ad.impression');
-    };
 
-    imgAd.onload  = reveal;
-    imgAd.onerror = () => {
-      if (myToken !== currentToken) return;
-      hideLoading();
-      showBadgeAndCountdown(duration);
-      reportEvent('ad.impression');
-    };
-    imgAd.src = imgUrl;
+      // 6. Schedule Ad End
+      adTimer = setTimeout(() => {
+        if (myToken === currentToken) returnToLive();
+      }, remaining * 1000);
 
-    if (imgAd.complete && imgAd.naturalWidth > 0) reveal();
-
-    clearTimeout(adTimer);
-    adTimer = setTimeout(() => {
-      if (myToken === currentToken) returnToLive();
-    }, duration * 1000);
+    }, 7000); 
   }
 
   function returnToLive() {
     clearTimeout(adTimer); adTimer = null;
+    clearTimeout(bumperTimer); bumperTimer = null;
+    
     if (currentMode === 'live' && !currentAdType) {
       hideBadge(); hideLoading(); hideAdVideoLayer(); hideImageLayer();
       return;
@@ -292,17 +284,18 @@
     
     hideBadge();
     hideLoading();
-    hideImageLayer();
-    hideAdVideoLayer();
     
     if (wasVideoAd) {
-      // Cut ad audio instantly right before visual fade-out unloads it
-      adEl.volume = 0;
+      // Crossfade Ad Audio OUT over 500ms
+      animateVolume(adEl, 0, 500);
+      hideAdVideoLayer();
       setTimeout(() => unloadAdVideo(), 500); 
+    } else {
+      hideImageLayer();
     }
     
-    // Fade in live audio
-    animateVolume(liveEl, 1);
+    // Crossfade Live Audio IN over 500ms
+    animateVolume(liveEl, 1, 500);
     safePlay(liveEl);
     
     reportEvent('ad.complete');
@@ -317,20 +310,10 @@
     return 'video';
   }
 
-  function dispatchAd(msg) {
-    currentTriggerId = msg.triggerId; currentAdId = msg.adId;
-    currentAdType   = inferAdType(msg);
-    const elapsed   = Math.max(0, (Date.now() - (msg.startAt || Date.now())) / 1000);
-    const remaining = Math.max(1, (msg.duration || 15) - elapsed);
-
-    if (currentAdType === 'image') return playImageAd(msg.adUrl, remaining, msg.metadata);
-    return playVideoAd(msg.adUrl, remaining);
-  }
-
   function applyState(state) {
     if (!state) return;
     if (state.mode === 'ad' && state.adUrl) {
-      dispatchAd({
+      playAdFlow({
         triggerId: state.triggerId, adId: state.adId, adType: state.adType,
         adUrl: state.adUrl, duration: state.duration, startAt: state.startAt, metadata: state.metadata,
       });
@@ -340,7 +323,7 @@
   }
 
   function handleCommand(msg) {
-    if (msg.action === 'play_ad')      dispatchAd(msg);
+    if (msg.action === 'play_ad')      playAdFlow(msg);
     else if (msg.action === 'resume_live') returnToLive();
   }
 
