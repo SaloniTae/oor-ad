@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v4)
+ * Ad Injection - viewer player (production build v5)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -36,7 +36,7 @@
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  // ---- audio fade controller ------------------------------------------------
+  // ---- audio fade controller (Live Stream Only) ----------------------------
   function animateVolume(el, targetVolume, durationMs = 500) {
     if (!el) return;
     
@@ -229,9 +229,8 @@
       hideLoading();
       showAdVideoLayer();
       
-      adEl.volume = 0;
+      // Play ad audio instantly without fading
       safePlay(adEl);
-      animateVolume(adEl, 1); // Cross-fade in the ad audio
       
       showBadgeAndCountdown(duration);
       reportEvent('ad.impression');
@@ -250,7 +249,7 @@
     setMode('ad');
     showLoading();
     
-    // Cross-fade out the live stream audio for the ad break
+    // Cross-fade out the live stream audio for the image break
     animateVolume(liveEl, 0);
 
     const clickUrl = meta && meta.click_url ? meta.click_url : null;
@@ -297,10 +296,12 @@
     hideAdVideoLayer();
     
     if (wasVideoAd) {
-      animateVolume(adEl, 0);
+      // Cut ad audio instantly right before visual fade-out unloads it
+      adEl.volume = 0;
       setTimeout(() => unloadAdVideo(), 500); 
     }
     
+    // Fade in live audio
     animateVolume(liveEl, 1);
     safePlay(liveEl);
     
