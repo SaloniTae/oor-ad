@@ -1,11 +1,11 @@
 /**
- * Ad Injection - viewer player (production build v15 - Elite Sync + Pod Stitching)
+ * Ad Injection - viewer player (production build v16 - Strict Repo Logic + Pods)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
   
-  const liveEl = $('videoA');            
-  const adEl   = $('videoB');            
+  const liveEl = $('videoA');            // fixed role: LIVE
+  const adEl   = $('videoB');            // fixed role: AD (video ads only)
   const statusEl = $('status'), badge = $('badge'), cd = $('countdown');
   const modeEl = $('mode'), cidEl = $('cid'), chEl = $('ch');
   const imgLink = $('imgLink'), imgAd = $('imgAd'), loadingEl = $('loading');
@@ -24,132 +24,57 @@
   let masterTicker = null;
   let imageClearTimeout = null;
   
-  let currentMode = 'live';         
-  let currentPhase = 'live'; // Tracks strictly: 'live', 'bumper', 'ad:0', 'ad:1', etc.
-  let currentAdType = null;         
-  let currentAdId = null;
-  let currentTriggerId = null;
+  let currentMode = 'live';         // 'live' | 'ad'
+  let currentPhase = 'live';        // 'live' | 'bumper' | 'ad:0' | 'ad:1'
+  let currentAdType = null;         // 'video' | 'hls' | 'image' | null
   
-  // Pod State (Stitching)
+  // Pod State
   let currentPod = [];
   let podStartAt = 0;
   let podBumperSec = 7;
+  let currentTriggerId = null;
   
-  let userWantsSound = true;       
+  let userWantsSound = false;       
 
   const setStatus = (t, cls) => { statusEl.textContent = t; statusEl.className = 'status ' + (cls||''); };
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
-  // ---- Audio Engine (Strictly from v11) ------------------------------------
-  const AudioEngine = {
-    raf: null,
-    fade(targetLiveVol, targetAdVol, durationMs = 500) {
-      cancelAnimationFrame(this.raf);
-      
-      if (!userWantsSound) {
-        liveEl.muted = true; adEl.muted = true;
-        liveEl.volume = targetLiveVol; adEl.volume = targetAdVol;
-        return;
-      }
-      
-      const startLive = liveEl.volume || 0;
-      const startAd = adEl.volume || 0;
-      const startTime = performance.now();
-      
-      // Hardware unlock instantly if fading UP
-      if (targetLiveVol > 0) liveEl.muted = false;
-      if (targetAdVol > 0) adEl.muted = false;
-
-      const step = (now) => {
-        const progress = Math.min((now - startTime) / durationMs, 1);
-        liveEl.volume = startLive + (targetLiveVol - startLive) * progress;
-        adEl.volume = startAd + (targetAdVol - startAd) * progress;
-
-        if (progress < 1) {
-          this.raf = requestAnimationFrame(step);
-        } else {
-          // Hardware lock explicitly at 0 to prevent ghost bleeding
-          if (targetLiveVol === 0) liveEl.muted = true;
-          if (targetAdVol === 0) adEl.muted = true;
-        }
-      };
-      this.raf = requestAnimationFrame(step);
-    },
-    
-    syncHardware() {
-      if (currentPhase === 'live') {
-        this.fade(1, 0, 0);
-      } else if (currentPhase === 'bumper') {
-        this.fade(0, 0, 0);
+  // ---- Strict Repo Audio Engine --------------------------------------------
+  // Reverted entirely to the bulletproof, instant toggle logic
+  function applyAudioState() {
+    if (currentPhase === 'live') {
+      liveEl.muted = !userWantsSound;
+      adEl.muted   = true;
+    } else if (currentPhase === 'bumper') {
+      liveEl.muted = true;
+      adEl.muted   = true;
+    } else {
+      // Inside an actual ad
+      if (currentAdType === 'image') {
+        liveEl.muted = true;
+        adEl.muted   = true;
       } else {
-        this.fade(0, currentAdType === 'image' ? 0 : 1, 0);
+        liveEl.muted = true;
+        adEl.muted   = !userWantsSound;
       }
-    }
-  };
-
-  function safePlay(el) {
-    if (el === adEl && currentAdType === 'image') return; 
-    
-    el.volume = userWantsSound ? 1 : 0;
-    el.muted = !userWantsSound;
-    const playPromise = el.play();
-    
-    if (playPromise !== undefined) {
-      playPromise.catch(e => {
-        if (e.name === 'NotAllowedError' && userWantsSound) {
-          userWantsSound = false;
-          unmuteBtn.textContent = 'Tap to Unmute';
-          AudioEngine.syncHardware();
-          el.play().catch(()=>{}); 
-        }
-      });
     }
   }
 
   unmuteBtn.onclick = () => {
     userWantsSound = !userWantsSound;
     unmuteBtn.textContent = userWantsSound ? 'Mute' : 'Tap to Unmute';
-    AudioEngine.syncHardware();
+    applyAudioState();
     
-    const target = currentPhase === 'live' ? liveEl : (currentAdType !== 'image' && currentPhase !== 'bumper' ? adEl : null);
-    if (target && userWantsSound) target.play().catch(()=>{});
+    // Kick playback on the currently-audible element
+    const audible = (currentPhase === 'live') ? liveEl : (currentAdType !== 'image' && currentPhase !== 'bumper' ? adEl : null);
+    if (audible) audible.play().catch(() => {});
   };
 
-  // ---- Telemetry & Watchdog (Strictly from v11) ----------------------------
-  function attachWatchdog(el, prefix) {
-    let errorCooldown = false;
-    
-    const report = (type, detail) => {
-      if (errorCooldown) return;
-      errorCooldown = true; setTimeout(() => errorCooldown = false, 5000);
-      reportEvent(`error: ${prefix}_${type}`, { detail });
-    };
-
-    el.addEventListener('waiting', () => {
-      if (prefix === 'live' && currentPhase === 'live') report('freeze', 'buffer starved');
-      if (prefix === 'ad' && currentPhase.startsWith('ad:')) report('freeze', 'ad buffer starved');
-    });
-    
-    el.addEventListener('error', () => report('playback_failed', el.error?.message));
-
-    el.addEventListener('pause', () => {
-      if (prefix === 'live' && liveUrl && !el.ended) {
-        el.play().catch(e => report('autoplay_blocked', e.message));
-      }
-    });
-  }
-  
-  attachWatchdog(liveEl, 'live');
-  attachWatchdog(adEl, 'ad');
-
-  // ---- HLS (Strictly from v11) ---------------------------------------------
+  // ---- HLS Loader (Strictly from Repo) -------------------------------------
   function newHlsConfig() {
     return {
-      lowLatencyMode: true, startFragPrefetch: true,
-      maxBufferLength: 30, backBufferLength: 60, maxMaxBufferLength: 60,
-      manifestLoadingMaxRetry: 4, manifestLoadingRetryDelay: 500,
-      fragLoadingMaxRetry: 6, fragLoadingRetryDelay: 500,
-      autoStartLoad: true,
+      lowLatencyMode: true, startFragPrefetch: true, maxBufferLength: 30, backBufferLength: 60, maxMaxBufferLength: 60,
+      manifestLoadingMaxRetry: 4, manifestLoadingRetryDelay: 500, fragLoadingMaxRetry: 6, fragLoadingRetryDelay: 500, autoStartLoad: true,
     };
   }
 
@@ -175,7 +100,8 @@
       liveEl.src = liveUrl;
       try { liveEl.load(); } catch {}
     }
-    safePlay(liveEl);
+    applyAudioState();
+    liveEl.play().catch(() => {});
   }
 
   function loadAdVideo(url, startTimeOffset = 0) {
@@ -183,6 +109,7 @@
     try { adEl.pause(); } catch {}
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
 
+    // Force background muting during load
     adEl.autoplay = false; 
     adEl.muted = true;
 
@@ -192,8 +119,9 @@
       adHls.attachMedia(adEl);
       adHls.on(Hls.Events.MEDIA_ATTACHED, () => {
         adHls.loadSource(url);
-        adEl.currentTime = startTimeOffset; 
-        adEl.pause(); 
+      });
+      adHls.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (startTimeOffset > 0) adEl.currentTime = startTimeOffset;
       });
       adHls.on(Hls.Events.ERROR, (_e, d) => {
         if (!d.fatal) return;
@@ -204,8 +132,9 @@
       adEl.src = url;
       try { 
         adEl.load(); 
-        adEl.addEventListener('loadedmetadata', () => { adEl.currentTime = startTimeOffset; }, {once:true});
-        adEl.pause(); 
+        if (startTimeOffset > 0) {
+          adEl.addEventListener('loadedmetadata', () => { adEl.currentTime = startTimeOffset; }, {once: true});
+        }
       } catch {}
     }
   }
@@ -216,29 +145,34 @@
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
   }
 
-  // ---- DOM GC Helpers ------------------------------------------------------
-  function updateCountdown(remaining) {
+  // ---- UI Helpers -----------------------------------------------------------
+  function updateCountdownUI(remaining) {
     if (remaining > 0) {
+      badge.classList.remove('hidden');
       badge.classList.add('show');
       cd.textContent = Math.ceil(remaining);
-    } else {
-      badge.classList.remove('show');
     }
   }
-  
-  function hideBadge() { badge.classList.remove('show'); }
-  function hideLoading() { loadingEl && loadingEl.classList.remove('show'); }
+
+  function hideBadge() {
+    badge.classList.remove('show');
+    badge.classList.add('hidden');
+  }
+
+  function showLoading() { loadingEl && loadingEl.classList.remove('hidden'); }
+  function hideLoading() { loadingEl && loadingEl.classList.add('hidden'); }
+
   function showAdVideoLayer() { adEl.classList.add('on'); }
   function hideAdVideoLayer() { adEl.classList.remove('on'); }
 
   function showImageLayer(clickUrl) {
     if (clickUrl) imgLink.setAttribute('href', clickUrl);
     else          imgLink.removeAttribute('href');
-    imgLink.classList.add('on');
+    imgLink.classList.remove('hidden');
   }
 
   function hideImageLayer() {
-    imgLink.classList.remove('on');
+    imgLink.classList.add('hidden');
     clearTimeout(imageClearTimeout);
     imageClearTimeout = setTimeout(() => {
       imgAd.removeAttribute('src');
@@ -247,52 +181,32 @@
   }
 
   // ---- The Broadcast Master Ticker (Pod Engine) ----------------------------
-  function transitionToPhase(newPhase, targetAd = null, startOffsetSec = 0) {
-    currentPhase = newPhase;
-
-    if (newPhase === 'live') {
-      setMode('live');
-      currentAdType = null; currentAdId = null;
-      hideBadge(); hideLoading(); hideImageLayer(); hideAdVideoLayer();
-      unloadAdVideo(); // Guarantees zero ghost audio
-      
-      AudioEngine.fade(1, 0, 500);
-      safePlay(liveEl);
-      reportEvent('ad.complete');
-      return;
-    }
-
-    if (newPhase === 'bumper') {
-      setMode('ad');
-      currentAdType = null;
-      hideBadge(); hideImageLayer(); hideAdVideoLayer(); unloadAdVideo();
-      
-      loadingEl.classList.add('show');
-      AudioEngine.fade(0, 0, 500); // Fades live out, keeps ad muted
-      return;
-    }
-
-    // Entering a specific stitched Ad
-    setMode('ad');
+  function returnToLive() {
+    clearInterval(masterTicker); 
+    masterTicker = null;
+    
+    if (currentPhase === 'live') return;
+    
+    const wasVideoAd = (currentAdType === 'video' || currentAdType === 'hls');
+    
+    currentMode = 'live';
+    currentPhase = 'live';
+    currentAdType = null;
+    currentTriggerId = null;
+    currentPod = [];
+    
+    setMode('live');
+    hideBadge();
     hideLoading();
-    currentAdType = targetAd.adType;
-    currentAdId = targetAd.adId;
-
-    if (currentAdType === 'image') {
-      hideAdVideoLayer();
-      unloadAdVideo();
-      AudioEngine.fade(0, 0, 500); 
-      showImageLayer(targetAd.metadata?.click_url);
-      imgAd.src = targetAd.adUrl;
-    } else {
-      hideImageLayer();
-      showAdVideoLayer();
-      loadAdVideo(targetAd.adUrl, startOffsetSec);
-      AudioEngine.fade(0, 1, 500); // Crossfade into Ad Audio
-      safePlay(adEl);
-    }
-
-    reportEvent('ad.impression', { adId: currentAdId, phase: newPhase });
+    hideImageLayer();
+    hideAdVideoLayer();
+    
+    if (wasVideoAd) unloadAdVideo(); // Guarantees zero ghost audio
+    
+    applyAudioState(); // Snaps audio instantly
+    liveEl.play().catch(() => {});
+    
+    reportEvent('ad.complete');
   }
 
   function tick() {
@@ -300,13 +214,22 @@
 
     const absoluteElapsedSec = Math.max(0, (Date.now() - podStartAt) / 1000);
     
-    // 1. Are we in the bumper?
+    // 1. Bumper Phase
     if (absoluteElapsedSec < podBumperSec) {
-      if (currentPhase !== 'bumper') transitionToPhase('bumper');
+      if (currentPhase !== 'bumper') {
+        currentPhase = 'bumper';
+        currentAdType = null;
+        
+        hideImageLayer();
+        hideAdVideoLayer();
+        showLoading(); 
+        
+        applyAudioState(); // Instantly mutes live
+      }
       return;
     }
 
-    // 2. We are in the Ad phase. Which ad in the pod should be playing?
+    // 2. Ad Phase (Calculate which ad)
     let timeAccumulator = podBumperSec;
     let targetPhase = 'live';
     let targetAd = null;
@@ -328,18 +251,63 @@
       timeAccumulator += ad.duration;
     }
 
-    // 3. Execute Phase Transition if the active ad (or live state) changed
+    // 3. Execution
+    if (targetPhase === 'live') {
+      returnToLive();
+      return;
+    }
+
     if (currentPhase !== targetPhase) {
-      transitionToPhase(targetPhase, targetAd, activeAdElapsed);
+      currentPhase = targetPhase;
+      currentAdType = targetAd.adType;
+      
+      hideLoading();
+      
+      if (currentAdType === 'image') {
+        hideAdVideoLayer();
+        unloadAdVideo(); // Clear video DOM entirely
+        
+        // If it isn't the first ad (which was preloaded), set the src now
+        if (targetPhase !== 'ad:0') imgAd.src = targetAd.adUrl;
+        
+        showImageLayer(targetAd.metadata?.click_url);
+        applyAudioState();
+      } else {
+        hideImageLayer();
+        showAdVideoLayer();
+        
+        // If it isn't the first ad (which was preloaded), load it now
+        if (targetPhase !== 'ad:0') {
+          loadAdVideo(targetAd.adUrl, activeAdElapsed);
+        } else if (activeAdElapsed > 0.5) {
+          adEl.currentTime = activeAdElapsed; // Late joiner sync
+        }
+        
+        applyAudioState();
+        adEl.play().catch(()=>{});
+      }
+      
+      // PRELOAD NEXT ASSET (if image)
+      const nextIndex = parseInt(targetPhase.split(':')[1]) + 1;
+      if (nextIndex < currentPod.length && currentPod[nextIndex].adType === 'image') {
+        new Image().src = currentPod[nextIndex].adUrl;
+      }
+      
+      reportEvent('ad.impression', { adId: targetAd.adId, phase: currentPhase });
     }
     
-    // 4. Update UI Countdown
-    if (targetPhase !== 'live') {
-      updateCountdown(activeAdRemaining);
-    }
+    updateCountdownUI(activeAdRemaining);
   }
 
   // ---- Command Dispatch ----------------------------------------------------
+  function inferAdType(msg) {
+    if (msg.adType) return msg.adType;
+    const u = String(msg.adUrl || '').split('?')[0].split('#')[0].toLowerCase();
+    if (/\.m3u8$/.test(u)) return 'hls';
+    if (/\.(png|jpe?g|webp|gif|avif|heic|heif|bmp)$/.test(u)) return 'image';
+    return 'video';
+  }
+
   function applyState(state) {
     if (!state) return;
     
@@ -349,20 +317,32 @@
       podBumperSec = state.bumper || 7;
       currentTriggerId = state.triggerId;
       setMode('ad');
+      
+      // FIX: Preload the FIRST ad immediately during bumper
+      if (currentPod.length > 0) {
+        if (currentPod[0].adType === 'image') imgAd.src = currentPod[0].adUrl;
+        else loadAdVideo(currentPod[0].adUrl, 0);
+      }
+      
       if (!masterTicker) masterTicker = setInterval(tick, 100);
+      tick();
     } 
-    // Legacy support for single ads
     else if (state.mode === 'ad' && state.adUrl) {
       currentPod = [{ adId: state.adId, adType: state.adType, adUrl: state.adUrl, duration: state.duration, metadata: state.metadata }];
       podStartAt = state.startAt;
       podBumperSec = state.bumper || 7;
       currentTriggerId = state.triggerId;
       setMode('ad');
+      
+      // FIX: Preload the FIRST ad immediately during bumper
+      if (currentPod[0].adType === 'image') imgAd.src = currentPod[0].adUrl;
+      else loadAdVideo(currentPod[0].adUrl, 0);
+      
       if (!masterTicker) masterTicker = setInterval(tick, 100);
+      tick();
     } 
     else if (state.mode === 'live') {
-      clearInterval(masterTicker); masterTicker = null;
-      transitionToPhase('live');
+      returnToLive();
     }
   }
 
@@ -372,8 +352,7 @@
     } else if (msg.action === 'play_ad') {
       applyState({ mode: 'ad', adId: msg.adId, adType: msg.adType, adUrl: msg.adUrl, duration: msg.duration, startAt: msg.startAt, bumper: msg.bumper, triggerId: msg.triggerId, metadata: msg.metadata });
     } else if (msg.action === 'resume_live') {
-      clearInterval(masterTicker); masterTicker = null;
-      transitionToPhase('live');
+      returnToLive();
     }
   }
 
@@ -386,7 +365,7 @@
 
   let backoff = 500;
   function connect() {
-    setStatus('connecting...', '');
+    setStatus('connecting...');
     socket = new WebSocket(wsUrl);
 
     socket.onopen = () => {
