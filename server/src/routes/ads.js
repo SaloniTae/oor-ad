@@ -32,6 +32,7 @@ const ALLOWED = new Set([
   'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif',
   'image/heic', 'image/heif', 'image/avif', 'image/bmp',
 ]);
+
 const EXT_TO_MIME = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
   '.webp': 'image/webp', '.gif': 'image/gif',
@@ -59,7 +60,7 @@ const upload = multer({
       const ext = path.extname(file.originalname || '').toLowerCase();
       const guess = EXT_TO_MIME[ext];
       if (guess && ALLOWED.has(guess)) { file.mimetype = guess; return cb(null, true); }
-      return cb(new HttpError(400, 'bad_mime', `Unsupported type: ${file.mimetype || 'unknown'}.`));
+      return cb(new HttpError(400, 'bad_mime', `Unsupported type. Allowed: mp4, webm, mov, mkv, m3u8, png, jpg, webp, gif, heic, avif.`));
     }
     cb(null, true);
   },
@@ -122,13 +123,13 @@ r.post('/', validate(CreateBody), (req, res) => {
 });
 
 const getAd = db.prepare('SELECT * FROM ads WHERE id = ?');
-const listAds = db.prepare('SELECT * FROM ads WHERE tenant_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?');
+
+// Reverted to your exact original logic (no limit/offset bugs)
+const listAds = db.prepare('SELECT * FROM ads WHERE tenant_id = ? ORDER BY created_at DESC');
 
 r.get('/', (req, res) => {
-  const limit  = Math.min(200, Number(req.query.limit)  || 50);
-  const offset = Math.max(0,   Number(req.query.offset) || 0);
-  const rows = listAds.all(req.tenant.id, limit, offset).map(pub);
-  res.json({ ads: rows, limit, offset });
+  const rows = listAds.all(req.tenant.id).map(pub);
+  res.json({ ads: rows });
 });
 
 r.get('/:id', ownAd, (req, res) => res.json({ ad: pub(req.ad) }));
@@ -176,13 +177,13 @@ r.get('/:id/signed-url', ownAd, async (req, res, next) => {
   if (!req.ad.is_upload) return res.json({ url: req.ad.source, type: req.ad.type });
 
   try {
-    // 1. FASTEST: Direct CDN delivery if R2_PUBLIC_URL is configured
+    // 1. FASTEST: Direct CDN delivery (because you are using your own domain)
     if (process.env.R2_PUBLIC_URL) {
       const cdnUrl = `${process.env.R2_PUBLIC_URL.replace(/\/+$/, '')}/${req.ad.source}`;
       return res.json({ url: cdnUrl, type: req.ad.type });
     }
 
-    // 2. FALLBACK: Generate an S3 Pre-signed URL (Valid for 12 hours)
+    // 2. FALLBACK: Generate an S3 Pre-signed URL
     const command = new GetObjectCommand({ Bucket: bucketName, Key: req.ad.source });
     const url = await getSignedUrl(s3, command, { expiresIn: 43200 });
     res.json({ url, type: req.ad.type });
@@ -191,9 +192,9 @@ r.get('/:id/signed-url', ownAd, async (req, res, next) => {
   }
 });
 
-// Deprecated Local Router (to prevent index.js from crashing, returns 404 for old local files)
+// BUGFIX: Strictly target ONLY the asset path so it doesn't break the UI loader
 const publicRouter = express.Router();
-publicRouter.all('*', (req, res) => res.status(404).send('Assets now served via Cloudflare CDN'));
+publicRouter.get('/:id/asset', (req, res) => res.status(404).send('Assets now served via Cloudflare CDN'));
 
 function pub(a) { return { ...a, metadata: JSON.parse(a.metadata || '{}'), is_upload: !!a.is_upload }; }
 function ownAd(req, _res, next) {
