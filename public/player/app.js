@@ -315,8 +315,7 @@
         hideImageLayer();
         hideAdVideoLayer();
         showLoading();
-
-        AudioEngine.fade(0, 0, 500);
+        // Live audio keeps playing under the bumper screen — only the ad itself mutes it
       }
       return;
     }
