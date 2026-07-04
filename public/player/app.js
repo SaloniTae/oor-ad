@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v17.1 - Elite Sync & Telemetry + Pods FIXED)
+ * Ad Injection - viewer player (production build v17 - Elite Sync & Telemetry + Pods)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -362,10 +362,10 @@
         hideAdVideoLayer();
         unloadAdVideo();
 
-        if (targetPhase !== 'ad:0') {
-          clearTimeout(imageClearTimeout);
-          imgAd.src = targetAd.adUrl;
-        }
+        // FIX: The bumper's hideImageLayer() timeout wiped the DOM src 6.5s ago!
+        // We MUST re-apply it here. Because it was preloaded, it will be instant.
+        clearTimeout(imageClearTimeout);
+        imgAd.src = targetAd.adUrl;
 
         showImageLayer(targetAd.metadata?.click_url);
         liveEl.muted = true;
@@ -410,21 +410,6 @@
     currentTriggerId = triggerId;
     currentPhase = 'live'; // force tick() to detect a phase transition
     setMode('ad');
-
-    // ---- R2 / CDN Preload Engine ----
-    // Force the browser to aggressively cache all pod images immediately
-    if (currentPod && currentPod.length) {
-      currentPod.forEach(ad => {
-        if (ad.adType === 'image' && ad.adUrl) {
-          const link = document.createElement('link');
-          link.rel = 'preload';
-          link.as = 'image';
-          link.href = ad.adUrl;
-          document.head.appendChild(link);
-        }
-      });
-    }
-    // ---------------------------------
 
     // Preload the first ad immediately (covers the bumper window)
     if (currentPod.length > 0) {
