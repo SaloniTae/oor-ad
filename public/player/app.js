@@ -1,5 +1,5 @@
 /**
- * Ad Injection - viewer player (production build v17 - Elite Sync & Telemetry + Pods)
+ * Ad Injection - viewer player (production build v17.1 - Elite Sync & Telemetry + Pods FIXED)
  */
 (() => {
   const $ = (id) => document.getElementById(id);
@@ -235,10 +235,9 @@
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
   }
 
-  // ---- DOM GC Helpers (FIXED to match repo `.hidden` classes) --------------
+  // ---- DOM GC Helpers -------------------------------------------------------
   function updateCountdownUI(remaining) {
     if (remaining > 0) {
-      badge.classList.remove('hidden');
       badge.classList.add('show');
       cd.textContent = Math.ceil(remaining);
     }
@@ -246,22 +245,21 @@
 
   function hideBadge() {
     badge.classList.remove('show');
-    setTimeout(() => badge.classList.add('hidden'), 180);
   }
 
-  function hideLoading() { loadingEl && loadingEl.classList.add('hidden'); }
-  function showLoading() { loadingEl && loadingEl.classList.remove('hidden'); }
+  function hideLoading() { loadingEl && loadingEl.classList.remove('show'); }
+  function showLoading() { loadingEl && loadingEl.classList.add('show'); }
   function hideAdVideoLayer() { adEl.classList.remove('on'); }
   function showAdVideoLayer() { adEl.classList.add('on'); }
 
   function showImageLayer(clickUrl) {
     if (clickUrl) imgLink.setAttribute('href', clickUrl);
     else imgLink.removeAttribute('href');
-    imgLink.classList.remove('hidden');
+    imgLink.classList.add('on');
   }
 
   function hideImageLayer() {
-    imgLink.classList.add('hidden');
+    imgLink.classList.remove('on');
     clearTimeout(imageClearTimeout);
     imageClearTimeout = setTimeout(() => {
       imgAd.removeAttribute('src');
@@ -364,10 +362,11 @@
         hideAdVideoLayer();
         unloadAdVideo();
 
-        if (targetPhase !== 'ad:0') {
-          clearTimeout(imageClearTimeout);
-          imgAd.src = targetAd.adUrl;
-        }
+        // FIX: The bumper's hideImageLayer() timeout strips the DOM src to free memory.
+        // We MUST re-apply it here so the image displays. Since startPod() forced the 
+        // network to fetch it, the browser pulls it instantly from cache.
+        clearTimeout(imageClearTimeout);
+        imgAd.src = targetAd.adUrl;
 
         showImageLayer(targetAd.metadata?.click_url);
         liveEl.muted = true;
