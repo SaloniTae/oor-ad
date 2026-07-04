@@ -38,7 +38,6 @@ CREATE TABLE IF NOT EXISTS api_keys (
   last_used_at INTEGER,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_apikeys_tenant ON api_keys(tenant_id);
 
 CREATE TABLE IF NOT EXISTS channels (
   id TEXT PRIMARY KEY,
@@ -50,20 +49,18 @@ CREATE TABLE IF NOT EXISTS channels (
   created_at INTEGER NOT NULL,
   UNIQUE(tenant_id, slug)
 );
-CREATE INDEX IF NOT EXISTS idx_channels_tenant ON channels(tenant_id);
 
 CREATE TABLE IF NOT EXISTS ads (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  type TEXT NOT NULL,          -- 'video' | 'hls' | 'image'
-  source TEXT NOT NULL,        -- URL or path relative to uploadDir
+  type TEXT NOT NULL,          
+  source TEXT NOT NULL,        
   is_upload INTEGER DEFAULT 0,
   duration_seconds INTEGER NOT NULL,
   metadata TEXT DEFAULT '{}',
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_ads_tenant ON ads(tenant_id);
 
 CREATE TABLE IF NOT EXISTS triggers (
   id TEXT PRIMARY KEY,
@@ -71,13 +68,12 @@ CREATE TABLE IF NOT EXISTS triggers (
   channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
   ad_id TEXT NOT NULL REFERENCES ads(id) ON DELETE RESTRICT,
   duration_seconds INTEGER NOT NULL,
-  status TEXT NOT NULL,        -- 'active' | 'completed' | 'canceled'
+  status TEXT NOT NULL,        
   start_at INTEGER NOT NULL,
   end_at INTEGER NOT NULL,
-  triggered_by TEXT,           -- api_key id
+  triggered_by TEXT,           
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_triggers_channel ON triggers(channel_id, start_at DESC);
 
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -90,8 +86,6 @@ CREATE TABLE IF NOT EXISTS events (
   metadata TEXT,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_events_tenant_time ON events(tenant_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_events_channel ON events(channel_id, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,7 +97,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip TEXT,
   created_at INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_audit_tenant ON audit_log(tenant_id, created_at DESC);
 `);
+
+// --- AUTOMATIC MIGRATION: Support Ad Pods ---
+try {
+  db.exec(`ALTER TABLE triggers ADD COLUMN pod_data TEXT DEFAULT '[]'`);
+} catch (e) {
+  // Column already exists, safe to ignore
+}
 
 module.exports = db;
