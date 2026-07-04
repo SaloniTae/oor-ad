@@ -43,10 +43,18 @@
   const setMode   = (m) => { currentMode = m; modeEl.textContent = m; };
 
   // ---- Audio Engine (Atomic Interpolator) ----------------------------------
+  const clampVol = (v) => {
+    if (!Number.isFinite(v)) return 0;
+    return Math.min(1, Math.max(0, v));
+  };
+
   const AudioEngine = {
     raf: null,
     fade(targetLiveVol, targetAdVol, durationMs = 500) {
       cancelAnimationFrame(this.raf);
+
+      targetLiveVol = clampVol(targetLiveVol);
+      targetAdVol = clampVol(targetAdVol);
 
       if (!userWantsSound) {
         liveEl.muted = true; adEl.muted = true;
@@ -54,17 +62,26 @@
         return;
       }
 
-      const startLive = liveEl.volume || 0;
-      const startAd = adEl.volume || 0;
+      // Zero (or invalid) duration: snap instantly, skip rAF interpolation entirely
+      if (!Number.isFinite(durationMs) || durationMs <= 0) {
+        liveEl.volume = targetLiveVol;
+        adEl.volume = targetAdVol;
+        if (targetLiveVol > 0) liveEl.muted = false; else liveEl.muted = true;
+        if (targetAdVol > 0) adEl.muted = false; else adEl.muted = true;
+        return;
+      }
+
+      const startLive = clampVol(liveEl.volume);
+      const startAd = clampVol(adEl.volume);
       const startTime = performance.now();
 
       if (targetLiveVol > 0) liveEl.muted = false;
       if (targetAdVol > 0) adEl.muted = false;
 
       const step = (now) => {
-        const progress = Math.min((now - startTime) / durationMs, 1);
-        liveEl.volume = startLive + (targetLiveVol - startLive) * progress;
-        adEl.volume = startAd + (targetAdVol - startAd) * progress;
+        const progress = Math.min(Math.max((now - startTime) / durationMs, 0), 1);
+        liveEl.volume = clampVol(startLive + (targetLiveVol - startLive) * progress);
+        adEl.volume = clampVol(startAd + (targetAdVol - startAd) * progress);
 
         if (progress < 1) {
           this.raf = requestAnimationFrame(step);
@@ -346,7 +363,10 @@
         hideAdVideoLayer();
         unloadAdVideo();
 
-        if (targetPhase !== 'ad:0') imgAd.src = targetAd.adUrl;
+        if (targetPhase !== 'ad:0') {
+          clearTimeout(imageClearTimeout);
+          imgAd.src = targetAd.adUrl;
+        }
 
         showImageLayer(targetAd.metadata?.click_url);
         liveEl.muted = true;
