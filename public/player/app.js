@@ -362,11 +362,10 @@
         hideAdVideoLayer();
         unloadAdVideo();
 
-        // FIX: The bumper's hideImageLayer() timeout strips the DOM src to free memory.
-        // We MUST re-apply it here so the image displays. Since startPod() forced the 
-        // network to fetch it, the browser pulls it instantly from cache.
-        clearTimeout(imageClearTimeout);
-        imgAd.src = targetAd.adUrl;
+        if (targetPhase !== 'ad:0') {
+          clearTimeout(imageClearTimeout);
+          imgAd.src = targetAd.adUrl;
+        }
 
         showImageLayer(targetAd.metadata?.click_url);
         liveEl.muted = true;
@@ -411,6 +410,21 @@
     currentTriggerId = triggerId;
     currentPhase = 'live'; // force tick() to detect a phase transition
     setMode('ad');
+
+    // ---- R2 / CDN Preload Engine ----
+    // Force the browser to aggressively cache all pod images immediately
+    if (currentPod && currentPod.length) {
+      currentPod.forEach(ad => {
+        if (ad.adType === 'image' && ad.adUrl) {
+          const link = document.createElement('link');
+          link.rel = 'preload';
+          link.as = 'image';
+          link.href = ad.adUrl;
+          document.head.appendChild(link);
+        }
+      });
+    }
+    // ---------------------------------
 
     // Preload the first ad immediately (covers the bumper window)
     if (currentPod.length > 0) {
