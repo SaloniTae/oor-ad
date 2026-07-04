@@ -23,6 +23,7 @@ async function api(method, path, body, { multipart = false, asBlob = false } = {
   if (!r.ok) { const e = new Error(j?.error?.message || r.statusText); e.status = r.status; e.body = j; throw e; }
   return j;
 }
+
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs || {})) {
@@ -34,6 +35,7 @@ const h = (tag, attrs = {}, ...kids) => {
   for (const kid of kids.flat()) el.append(kid?.nodeType ? kid : document.createTextNode(kid ?? ''));
   return el;
 };
+
 const clone = (id) => document.getElementById(id).content.cloneNode(true);
 const copy = (t) => navigator.clipboard.writeText(t);
 
@@ -94,14 +96,19 @@ function renderDash() {
   const n = clone('tpl-dash');
   app.append(n);
   document.querySelector('[data-who]').textContent =
-    (state.tenant?.email || '') + (isAdmin() ? ' · ADMIN' : '');
+    (state.tenant?.email || '') + (isAdmin() ? ' — ADMIN' : '');
   document.querySelector('[data-act=logout]').onclick = logout;
+  
   // Show/hide admin-only nav
   document.querySelectorAll('.top nav a[data-admin]').forEach(a => a.classList.toggle('hidden', !isAdmin()));
   document.querySelectorAll('.top nav a[data-nav]').forEach(a => a.onclick = () => nav(a.dataset.nav));
   nav('overview');
 }
+
 function nav(name) {
+  // Clean up channel polling if we navigate away
+  clearInterval(window.channelPolling);
+
   document.querySelectorAll('.top nav a[data-nav]').forEach(a => a.classList.toggle('active', a.dataset.nav === name));
   const view = document.getElementById('view');
   view.innerHTML = '';
@@ -126,14 +133,15 @@ views.overview = async (view) => {
     h('div', { class: 'card', style: 'margin-top:20px' },
       h('h2', {}, 'Quick start'),
       h('div', { class: 'muted', style: 'line-height:1.6' },
-        '1. Create a ', h('b', {}, 'Channel'), ' with your live HLS URL. ',
-        '2. Add ', h('b', {}, 'Ads'), ' (upload a video/image or paste a URL). ',
-        '3. Issue a viewer token → give it to your player. ',
+        '1. Create a ', h('b', {}, 'Channel'), ' with your live HLS URL. \n',
+        '2. Add ', h('b', {}, 'Ads'), ' (upload a video/image or paste a URL). \n',
+        '3. Issue a viewer token — give it to your player. \n',
         '4. Trigger an ad from the channel page or via API.',
       ),
     ),
   ));
 };
+
 function stat(l, n) { return h('div', { class: 'stat' }, h('div', { class: 'l' }, l), h('div', { class: 'n' }, String(n ?? '-'))); }
 
 views.channels = async (view) => {
@@ -193,6 +201,7 @@ async function openChannelForm(view, existing) {
   view.append(wrap);
 }
 
+// ==== THE NEW OORMAX AD SEQUENCER AND TELEMETRY ====
 async function openChannel(c, view) {
   view.innerHTML = '';
   const [full, adsRes, triggers] = await Promise.all([
@@ -201,28 +210,152 @@ async function openChannel(c, view) {
     api('GET', `/v1/channels/${c.id}/triggers?limit=20`),
   ]);
   const ch = full.channel;
-  const wrap = h('div', { class: 'wrap' });
-
+  const wrap = h('div', { class: 'wrap', id: `channel-view-${ch.id}` });
   const triggerErr = h('div', { class: 'err' });
-  const adSelect = h('select', {},
-    ...(adsRes.ads.length ? adsRes.ads.map(a => h('option', { value: a.id }, `${a.name} · ${a.type} · ${a.duration_seconds}s`))
-                          : [h('option', { value: '' }, 'No ads yet — create one in Ad Library')])
+
+  // 1. LIVE TELEMETRY CARD
+  const teleStatus = h('div', { id: 'tele-status', class: 'muted' }, 'Syncing Telemetry...');
+  const telemetryCard = h('div', { class: 'card' }, 
+    h('h2', {}, 'Live Telemetry Engine'),
+    teleStatus
   );
-  const dur = h('input', { type: 'number', value: '', placeholder: 'override (optional)', min: 1, max: 600 });
-  const doTrigger = h('button', { class: 'primary', onclick: async () => {
+
+  clearInterval(window.channelPolling);
+  window.channelPolling = setInterval(async () => {
+    if (!document.getElementById(`channel-view-${ch.id}`)) {
+      clearInterval(window.channelPolling); return;
+    }
+    try {
+      const { state, viewers } = await api('GET', `/v1/channels/${ch.id}/state`);
+      if (state.mode === 'live') {
+        teleStatus.innerHTML = `<div style="color:#4ade80; font-weight:700; font-size:18px; margin-bottom:4px;">● BROADCAST LIVE</div><div class="muted">Connected Viewers: ${viewers}</div>`;
+      } else if (state.mode === 'pod' || state.mode === 'ad') {
+        const pod = state.pod || [{ duration: state.duration }];
+        const elapsed = Math.max(0, (Date.now() - state.startAt) / 1000);
+        const bumper = state.bumper || 7;
+        const totalAdTime = pod.reduce((a, b) => a + b.duration, 0);
+        const total = bumper + totalAdTime;
+        const remaining = total - elapsed;
+        
+        if (remaining <= 0) { teleStatus.innerHTML = 'Switching back to live...'; return; }
+
+        let phase = 'Bumper Phase (We\'ll be right back)';
+        if (elapsed >= bumper) {
+          let accum = bumper;
+          for(let i=0; i<pod.length; i++) {
+             if (elapsed >= accum && elapsed < accum + pod[i].duration) {
+                phase = `Playing Ad ${i+1} of ${pod.length}`; break;
+             }
+             accum += pod[i].duration;
+          }
+        }
+        
+        teleStatus.innerHTML = `
+          <div style="color:#ff4d5e; font-weight:700; font-size:18px;">● COMMERCIAL BREAK (${Math.ceil(remaining)}s left)</div>
+          <div style="margin-top: 10px; font-size:14px;">Current Phase: <b>${phase}</b></div>
+          <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-top: 14px; overflow: hidden;">
+             <div style="width: ${Math.min(100, (elapsed/total)*100)}%; height: 100%; background: #ff4d5e; border-radius: 4px; transition: width 1s linear;"></div>
+          </div>
+          <div style="margin-top: 14px; font-size: 13px;" class="muted">Connected Viewers: ${viewers}</div>
+        `;
+      }
+    } catch(e) {}
+  }, 1000);
+
+  // 2. POD SEQUENCER (Stitching UI)
+  let stagedPod = [];
+  const stagerContainer = h('div', { class: 'stager-area', style: 'margin-top: 16px;' });
+  
+  const renderStager = () => {
+    stagerContainer.innerHTML = '';
+    if (stagedPod.length === 0) {
+      stagerContainer.append(h('div', { class: 'muted', style: 'padding: 20px; border: 1px dashed var(--glass-border); border-radius: 12px; text-align: center;' }, 'Drag or click "+ Add" on ads below to build a sequence.'));
+      doTrigger.disabled = true;
+      return;
+    }
+    doTrigger.disabled = false;
+    
+    let total = 0;
+    const list = h('div', { style: 'display: flex; flex-direction: column; gap: 10px;' });
+    stagedPod.forEach((ad, idx) => {
+      total += ad.override_duration;
+      
+      // Quick duration pills
+      const durOptions = [5, 10, 15, 30, ad.duration_seconds].filter((v, i, a) => a.indexOf(v) === i).sort((a,b)=>a-b);
+      const durPills = h('div', { style: 'display:flex; gap: 6px; margin-top: 8px; overflow-x: auto;' },
+        ...durOptions.map(d => {
+          const pill = h('button', { class: `small ${d === ad.override_duration ? 'primary' : ''}`, style: d !== ad.override_duration ? 'background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);' : '', onclick: () => {
+            ad.override_duration = d;
+            renderStager();
+          }}, `${d}s`);
+          pill.style.padding = '4px 12px'; pill.style.fontSize = '12px';
+          return pill;
+        })
+      );
+
+      list.append(h('div', { class: 'card', style: 'padding: 14px; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center; border-color: rgba(255, 77, 94, 0.4); background: rgba(255, 77, 94, 0.08);' }, 
+        h('div', { style: 'flex-grow: 1;' }, 
+          h('div', { style: 'font-weight: 600; font-size: 14px; display:flex; align-items:center; gap:8px;' }, h('span', {style:'opacity:0.5;'}, `${idx + 1}.`), ad.name),
+          durPills
+        ),
+        h('div', { style: 'display: flex; align-items: center; gap: 16px;'},
+          h('span', { style: 'font-weight: 700; font-size:16px;' }, `${ad.override_duration}s`),
+          h('button', { class: 'small danger', onclick: () => { stagedPod.splice(idx, 1); renderStager(); } }, '✕')
+        )
+      ));
+    });
+    
+    stagerContainer.append(
+      h('div', { style: 'display: flex; justify-content: space-between; margin-bottom: 12px; font-weight: 600; font-size: 16px;' },
+        h('span', {}, 'Staged Commercial Break'),
+        h('span', {}, `Total Playtime: ${total}s`)
+      ),
+      list
+    );
+  };
+
+  const doTrigger = h('button', { class: 'primary', style: 'width: 100%; justify-content: center; padding: 16px; font-size: 16px; font-weight: 700; margin-top: 16px;', onclick: async () => {
     triggerErr.textContent = '';
     try {
-      const body = { ad_id: adSelect.value };
-      const v = Number(dur.value); if (v) body.duration_seconds = v;
+      doTrigger.disabled = true;
+      doTrigger.textContent = 'Triggering...';
+      const body = { pod: stagedPod.map(a => ({ ad_id: a.id, duration_seconds: a.override_duration })) };
       const r = await api('POST', `/v1/channels/${ch.id}/trigger`, body);
-      triggerErr.textContent = `Triggered ✓ delivered to ${r.delivered} viewer(s)`;
+      triggerErr.textContent = `Triggered! Delivered to ${r.delivered} viewer(s)`;
       triggerErr.className = 'ok';
-      setTimeout(() => nav('channels'), 400) && openChannel(c, document.getElementById('view'));
-    } catch (e) { triggerErr.className = 'err'; triggerErr.textContent = e.message; }
-  }}, '▶ Trigger ad');
-  const doResume = h('button', { onclick: async () => {
-    try { await api('POST', `/v1/channels/${ch.id}/resume`); triggerErr.className='ok'; triggerErr.textContent='Resumed live ✓'; } catch(e){triggerErr.className='err';triggerErr.textContent=e.message;}
-  }}, '■ Resume live');
+      stagedPod = [];
+      renderStager();
+    } catch (e) { 
+      triggerErr.className = 'err'; triggerErr.textContent = e.message; 
+      doTrigger.disabled = false;
+      doTrigger.textContent = 'Trigger Commercial Break';
+    }
+  }}, 'Trigger Commercial Break');
+
+  const adsListContainer = h('div', { style: 'max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--glass-border); padding: 12px; border-radius: 12px; background: rgba(0,0,0,0.3);' },
+    ...(adsRes.ads.length ? adsRes.ads.map(a => {
+      return h('div', { class: 'row', style: 'justify-content: space-between; padding: 10px 14px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); transition: background 0.2s;' },
+        h('div', { style: 'font-size: 13px; font-weight: 500;' }, `${a.name} `, h('span', { class: 'muted', style: 'margin-left:8px; font-size: 11px;' }, `${a.type.toUpperCase()} • ${a.duration_seconds}s`)),
+        h('button', { class: 'small outline', onclick: () => { stagedPod.push({ ...a, override_duration: a.duration_seconds }); renderStager(); } }, '+ Add')
+      );
+    }) : [h('div', { class: 'muted' }, 'No ads in library')])
+  );
+
+  renderStager();
+
+  const doResume = h('button', { class: 'danger', style: 'width: 100%; justify-content: center; padding: 12px; margin-top: 12px; font-weight: 600;', onclick: async () => {
+    try { await api('POST', `/v1/channels/${ch.id}/resume`); triggerErr.className='ok'; triggerErr.textContent='Force Resumed Live'; } catch(e){triggerErr.className='err';triggerErr.textContent=e.message;}
+  }}, 'Force Resume Live (Cancel Ads)');
+
+  const podSequencerCard = h('div', { class: 'card' },
+    h('h2', {}, 'Ad Sequencer (Pod Builder)'),
+    h('div', { class: 'muted', style: 'margin-bottom: 16px;' }, 'Select ads from your library to stitch them together seamlessly behind a single bumper.'),
+    adsListContainer,
+    stagerContainer,
+    doTrigger,
+    doResume,
+    triggerErr
+  );
 
   wrap.append(
     h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:14px' },
@@ -239,8 +372,6 @@ async function openChannel(c, view) {
       h('div', { class: 'kv' },
         h('b', {}, 'Slug'),      h('span', {}, ch.slug),
         h('b', {}, 'Live URL'),  h('span', { style: 'word-break:break-all' }, ch.live_url),
-        h('b', {}, 'State'),     h('span', {}, JSON.stringify(full.state)),
-        h('b', {}, 'Viewers'),   h('span', {}, String(full.viewers)),
       ),
       h('div', { class: 'row', style: 'margin-top:14px' },
         h('button', { onclick: async () => {
@@ -251,19 +382,13 @@ async function openChannel(c, view) {
         h('button', { onclick: () => openViewer(ch) }, 'Open player'),
       ),
     ),
-    h('div', { class: 'card' },
-      h('h2', {}, 'Trigger an ad'),
-      label('Ad'), adSelect,
-      label('Duration override (seconds, optional)'), dur,
-      h('div', { class: 'row', style: 'margin-top:12px' }, doTrigger, doResume),
-      triggerErr,
-    ),
+    telemetryCard,
+    podSequencerCard,
     h('div', { class: 'card' },
       h('h2', {}, 'Recent triggers'),
       triggers.triggers.length
-        ? tbl(['When','Ad','Duration','Status'], triggers.triggers.map(t => [
+        ? tbl(['When','Total Time','Status'], triggers.triggers.map(t => [
             new Date(t.start_at).toLocaleString(),
-            t.ad_id,
             t.duration_seconds + 's',
             t.status,
           ]))
@@ -274,6 +399,8 @@ async function openChannel(c, view) {
   view.append(wrap);
 }
 
+// ==== END SEQUENCER UPGRADE ====
+
 async function previewAd(ad) {
   const { url, type } = await api('GET', `/v1/ads/${ad.id}/signed-url`);
   const el = type === 'image'
@@ -281,7 +408,7 @@ async function previewAd(ad) {
     : h('video', { class: 'preview', src: url, controls: true, autoplay: true, playsinline: true });
   modal(
     h('h2', {}, ad.name),
-    h('div', { class: 'muted' }, `${type} · ${ad.duration_seconds}s`),
+    h('div', { class: 'muted' }, `${type} — ${ad.duration_seconds}s`),
     el,
     h('div', { class: 'muted', style: 'font-size:11px;word-break:break-all' }, url),
   );
@@ -312,7 +439,7 @@ views.ads = async (view) => {
   wrap.append(h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:14px' },
     h('h1', {}, 'Ad Library'),
     h('div', { class: 'row' },
-      h('button', { class: 'primary', onclick: () => openAdUpload(view) }, '⬆ Upload file'),
+      h('button', { class: 'primary', onclick: () => openAdUpload(view) }, '↑ Upload file'),
       h('button', { onclick: () => openAdUrl(view) }, '+ Add by URL'),
     ),
   ));
@@ -343,11 +470,10 @@ function openAdUpload(view) {
     err.className = 'err'; err.textContent = '';
     const file = f.file.files[0];
     if (!file) { err.textContent = 'Choose a file'; return; }
-    // Client sanity: warn early if the user picked something clearly unsupported.
     const looksOk = /^(image\/|video\/|application\/(vnd\.apple\.mpegurl|x-mpegurl))/i.test(file.type)
       || /\.(mp4|webm|mov|mkv|m3u8|png|jpe?g|webp|gif|heic|heif|avif|bmp)$/i.test(file.name);
     if (!looksOk) { err.textContent = `That file type (${file.type || 'unknown'}) isn't supported.`; return; }
-    submit.disabled = true; submit.textContent = 'Uploading\u2026';
+    submit.disabled = true; submit.textContent = 'Uploading...';
     const durNum = Number(f.duration.value);
     const durOk  = Number.isFinite(durNum) && durNum >= 1 ? durNum : 15;
     const fd = new FormData();
@@ -373,15 +499,13 @@ function openAdUpload(view) {
   ));
 }
 
-// Guess an ad's type from a URL. Extensions are the strongest hint;
-// query strings are stripped before checking.
 function detectAdTypeFromUrl(url) {
   const clean = String(url || '').split('?')[0].split('#')[0].toLowerCase();
   if (/\.m3u8$/.test(clean)) return 'hls';
   if (/\.(png|jpe?g|webp|gif|avif|heic|heif|bmp)$/.test(clean)) return 'image';
   if (/\.(mp4|webm|mov|mkv|m4v)$/.test(clean)) return 'video';
-  if (/(image|photo|picture)/.test(clean)) return 'image';   // fallback heuristic
-  return null;   // unknown -> let user pick
+  if (/(image|photo|picture)/.test(clean)) return 'image';
+  return null; 
 }
 
 function openAdUrl(view) {
@@ -391,7 +515,7 @@ function openAdUrl(view) {
   const f = {
     name: h('input', { placeholder: 'Ad name' }),
     type: h('select', {}, h('option',{value:'hls'},'HLS (.m3u8)'), h('option',{value:'video'},'Video (mp4/webm)'), h('option',{value:'image'},'Image')),
-    source: h('input', { placeholder: 'https://… (auto-detect from extension)' }),
+    source: h('input', { placeholder: 'https://... (auto-detect from extension)' }),
     duration: h('input', { type: 'number', value: 15, min: 1, max: 600 }),
     click_url: h('input', { placeholder: 'https://example.com (optional)' }),
   };
@@ -427,7 +551,6 @@ function openAdUrl(view) {
   ));
 }
 
-
 function openAdEdit(view, ad) {
   view.innerHTML = '';
   const err = h('div', { class: 'err' });
@@ -437,7 +560,7 @@ function openAdEdit(view, ad) {
     name: h('input', { value: ad.name }),
     duration: h('input', { type: 'number', value: ad.duration_seconds, min: 1, max: 600 }),
     click_url: h('input', { value: meta.click_url || '', placeholder: 'https://example.com (image ads)' }),
-    source: h('input', { value: ad.source, placeholder: 'https://…' }),
+    source: h('input', { value: ad.source, placeholder: 'https://...' }),
   };
   view.append(h('div', { class: 'wrap narrow' },
     h('h1', {}, 'Edit ad'),
@@ -499,7 +622,7 @@ views.keys = async (view) => {
       h('h2', {}, 'Your keys'),
       keys.length ? tbl(['Name','Prefix','Rate limit','Last used','Actions'], keys.map(k => [
         k.name,
-        h('code',{}, `adi_${k.key_prefix}_…`),
+        h('code',{}, `adi_${k.key_prefix}_...`),
         (k.rate_limit_rpm || 'default') + '/min',
         k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '—',
         h('button', { class: 'small danger', onclick: async () => { if(confirm('Revoke?')){await api('DELETE',`/v1/auth/keys/${k.id}`);nav('keys');} } }, 'Revoke'),
@@ -554,10 +677,9 @@ views.settings = async (view) => {
   ));
 };
 
-// ---- events log ------------------------------------------------------------
 views.events = async (view) => {
   const wrap = h('div', { class: 'wrap' });
-  const list = h('div', { class: 'card', style: 'max-height:70vh;overflow:auto' }, h('div', { class: 'muted' }, 'Loading…'));
+  const list = h('div', { class: 'card', style: 'max-height:70vh;overflow:auto' }, h('div', { class: 'muted' }, 'Loading...'));
   wrap.append(h('div', { class: 'row', style: 'justify-content:space-between;margin-bottom:14px' },
     h('h1', {}, 'Events'),
     h('button', { onclick: () => views.events(view) }, 'Refresh'),
@@ -568,12 +690,11 @@ views.events = async (view) => {
   if (!events.length) list.append(h('div', { class: 'muted' }, 'No events yet.'));
   else events.forEach(e => list.append(h('div', { class: 'event-row' },
     h('span', { class: 't' }, new Date(e.created_at).toLocaleTimeString()),
-    h('span', { class: 'n' }, e.event_type + (e.viewer_id ? ` · viewer=${e.viewer_id}` : '') + (e.ad_id ? ` · ad=${e.ad_id.slice(0,8)}` : '')),
+    h('span', { class: 'n' }, e.event_type + (e.viewer_id ? ` — viewer=${e.viewer_id}` : '') + (e.ad_id ? ` — ad=${e.ad_id.slice(0,8)}` : '')),
     h('span', { class: 't' }, e.channel_id ? e.channel_id.slice(0, 8) : ''),
   )));
 };
 
-// ---- Platform admin --------------------------------------------------------
 views.platform = async (view) => {
   if (!isAdmin()) { view.append(h('div', { class: 'wrap' }, h('div', { class: 'err' }, 'Platform-admin only.'))); return; }
   const [stats, tenants] = await Promise.all([
@@ -638,7 +759,7 @@ async function openTenant(view, id) {
       h('b', {}, 'Email'),      h('span', {}, t.email),
       h('b', {}, 'Created'),    h('span', {}, new Date(t.created_at).toLocaleString()),
       h('b', {}, 'Webhook'),    h('span', {}, t.webhook_url || '—'),
-      h('b', {}, 'CORS'),       h('span', {}, (t.cors_origins||[]).join(', ') || '—'),
+      h('b', {}, 'CORS'),       h('span', {}, (t.cors_origins||[]).join(', ') || '*'),
       h('b', {}, 'Triggers 30d'),    h('span', {}, String(r.usage.triggers_30d)),
       h('b', {}, 'Impressions 30d'), h('span', {}, String(r.usage.impressions_30d)),
     ),
@@ -670,7 +791,7 @@ async function openTenant(view, id) {
     ),
     h('div', { class: 'card' },
       h('h2', {}, `API Keys (${r.keys.length})`),
-      r.keys.length ? tbl(['Name','Prefix','Status','Last used'], r.keys.map(k => [k.name, h('code',{},`adi_${k.key_prefix}_…`), h('span',{class:'pill '+(k.disabled?'off':'on')}, k.disabled?'off':'on'), k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '—'])) : h('div', { class: 'muted' }, 'None.'),
+      r.keys.length ? tbl(['Name','Prefix','Status','Last used'], r.keys.map(k => [k.name, h('code',{},`adi_${k.key_prefix}_...`), h('span',{class:'pill '+(k.disabled?'off':'on')}, k.disabled?'off':'on'), k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '—'])) : h('div', { class: 'muted' }, 'None.'),
     ),
   ));
 }
@@ -693,7 +814,7 @@ views.audit = async (view) => {
       h('code', {}, a.action),
       a.resource || '—',
       a.ip || '—',
-      a.metadata ? h('code', { style: 'font-size:11px' }, JSON.stringify(a.metadata)) : '—',
+      a.metadata ? h('code', { style: 'font-size:11px' }, JSON.stringify(a.metadata)) : '—'
     ])) : h('div', { class: 'card muted' }, 'No entries.'),
   ));
 };
