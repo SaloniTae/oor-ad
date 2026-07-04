@@ -1,6 +1,7 @@
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const { z } = require('zod');
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+const { getSignedUrl } = require('@aws-sdk/s3-request-presigner');
 const cfg = require('../config');
 const db = require('../db');
 const auth = require('../auth');
@@ -12,6 +13,17 @@ const { getAd, pubAd } = require('./ads');
 const r = express.Router();
 r.use(requireAuth);
 
+// ---- Cloudflare R2 Configuration ----
+const s3 = new S3Client({
+  region: 'auto',
+  endpoint: process.env.R2_ENDPOINT || 'https://912665bde4a5e0c8559acb3b0b1cd8e9.r2.cloudflarestorage.com',
+  credentials: {
+    accessKeyId: process.env.R2_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY || '',
+  }
+});
+const bucketName = process.env.R2_BUCKET || 'oor-ad';
+
 const getChannel = db.prepare('SELECT * FROM channels WHERE id = ?');
 const insertTrigger = db.prepare(`INSERT INTO triggers (id, tenant_id, channel_id, ad_id, duration_seconds, status, start_at, end_at, triggered_by, created_at, pod_data)
                                   VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
@@ -19,16 +31,6 @@ const setTriggerStatus = db.prepare('UPDATE triggers SET status = ? WHERE id = ?
 const activeTrigger = db.prepare(`SELECT * FROM triggers WHERE channel_id = ? AND status = 'active' ORDER BY start_at DESC LIMIT 1`);
 
 const timers = new Map();
-
-function publicBaseFor(req) {
-  const p = cfg.publicUrl || '';
-  const isLocalDefault = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/i.test(p) || !p;
-  if (!isLocalDefault) return p.replace(/\/+$/, '');
-  const proto = (req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
-  const host  = (req.headers['x-forwarded-host']  || req.get('host') || '').split(',')[0].trim();
-  if (host) return `${proto}://${host}`;
-  return p.replace(/\/+$/, '');
-}
 
 // Support both Single Ad (legacy) and Ad Pod arrays
 const TriggerBody = z.object({
@@ -41,7 +43,7 @@ const TriggerBody = z.object({
   lead_ms: z.number().int().min(0).max(5000).optional(),
 });
 
-r.post('/:id/trigger', validate(TriggerBody), (req, res, next) => {
+r.post('/:id/trigger', validate(TriggerBody), async (req, res, next) => {
   const channel = getChannel.get(req.params.id);
   if (!channel || channel.tenant_id !== req.tenant.id) return next(new HttpError(404, 'not_found', 'Channel not found'));
 
@@ -71,14 +73,20 @@ r.post('/:id/trigger', validate(TriggerBody), (req, res, next) => {
     let adUrl = ad.source;
     
     if (ad.is_upload) {
-      const token = jwt.sign({ typ: 'asset', ad: ad.id }, cfg.jwtSecret, { expiresIn: 3600 });
-      adUrl = `${publicBaseFor(req)}/v1/ads/${ad.id}/asset?token=${token}`;
+      if (process.env.R2_PUBLIC_URL) {
+        // Direct CDN Delivery (Fastest)
+        adUrl = `${process.env.R2_PUBLIC_URL.replace(/\/+$/, '')}/${ad.source}`;
+      } else {
+        // Fallback to S3 Presigned URL if R2_PUBLIC_URL isn't set in env
+        const command = new GetObjectCommand({ Bucket: bucketName, Key: ad.source });
+        adUrl = await getSignedUrl(s3, command, { expiresIn: 43200 });
+      }
     }
 
     resolvedPod.push({
       adId: ad.id,
       adType: ad.type,
-      adUrl: adUrl,
+      adUrl: adUrl, // Perfectly resolved CDN URL injected here
       duration: duration,
       metadata: JSON.parse(ad.metadata || '{}')
     });
