@@ -235,9 +235,10 @@
     adEl.removeAttribute('src'); try { adEl.load(); } catch {}
   }
 
-  // ---- DOM GC Helpers -------------------------------------------------------
+  // ---- DOM GC Helpers (FIXED to match repo `.hidden` classes) --------------
   function updateCountdownUI(remaining) {
     if (remaining > 0) {
+      badge.classList.remove('hidden');
       badge.classList.add('show');
       cd.textContent = Math.ceil(remaining);
     }
@@ -245,21 +246,22 @@
 
   function hideBadge() {
     badge.classList.remove('show');
+    setTimeout(() => badge.classList.add('hidden'), 180);
   }
 
-  function hideLoading() { loadingEl && loadingEl.classList.remove('show'); }
-  function showLoading() { loadingEl && loadingEl.classList.add('show'); }
+  function hideLoading() { loadingEl && loadingEl.classList.add('hidden'); }
+  function showLoading() { loadingEl && loadingEl.classList.remove('hidden'); }
   function hideAdVideoLayer() { adEl.classList.remove('on'); }
   function showAdVideoLayer() { adEl.classList.add('on'); }
 
   function showImageLayer(clickUrl) {
     if (clickUrl) imgLink.setAttribute('href', clickUrl);
     else imgLink.removeAttribute('href');
-    imgLink.classList.add('on');
+    imgLink.classList.remove('hidden');
   }
 
   function hideImageLayer() {
-    imgLink.classList.remove('on');
+    imgLink.classList.add('hidden');
     clearTimeout(imageClearTimeout);
     imageClearTimeout = setTimeout(() => {
       imgAd.removeAttribute('src');
