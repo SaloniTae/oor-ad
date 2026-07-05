@@ -3,19 +3,13 @@
  *
  * Keys (all namespaced, no SQLite fallback):
  *   session:{pin}                Redis HASH — sessionId -> JSON blob of session record
- *   session:{pin}:lease           Redis STRING (TTL, per-session heartbeat)  key is
- *                                  actually session:{pin}:lease:{sessionId} — set to
- *                                  '1' with PEX. Presence indicates a live session.
+ *   session:{pin}:lease:{sid}    Redis STRING (TTL, per-session heartbeat) — set to '1' with PEX.
  *   maxDevices:{pin}             Redis STRING — integer (default 1)
- *   revoked_sessions             Redis SET (each member TTL'd via revoked_sessions:{sid} companion key)
+ *   revoked_sessions:{sid}       Redis STRING — TTL'd revocation marker
  *   session_map:{sessionId}      Redis STRING -> pin (reverse lookup for kick/verify)
  *
- * NOTE: we intentionally use a hash for the session list AND a per-session
- * lease key with PEXPIRE. The hash gives us O(1) enumerate; the lease keys
- * expire automatically without a sweep. On every enumerate we cross-check
- * hash entries against lease keys and prune orphans lazily. This keeps
- * memory bounded without in-process timers, satisfying the spec's
- * "no in-process sweep interval" rule.
+ * NOTE: hash + per-session PEXPIRE lease replaces an in-process sweep. On every
+ * enumerate we cross-check hash entries against lease keys and prune orphans lazily.
  */
 const crypto = require('crypto');
 const { client, publish, CHANNELS } = require('./redis');
@@ -35,6 +29,13 @@ const k = {
 const uuid = () => crypto.randomBytes(16).toString('hex');
 const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
 
+/**
+ * COARSE device fingerprint used for UA soft-binding. Deliberately NOT a hash
+ * of the full UA string — that would trigger on trivial version bumps (e.g.
+ * Chrome 120 -> 121) and produce false-positive kicks. We only fingerprint
+ * (browser family, OS family). Same phone with Chrome auto-updating = OK.
+ * Same phone opened in a different browser = kick (that's suspicious).
+ */
 function parseDeviceLabel(userAgent) {
   const ua = String(userAgent || '');
   const browser =
@@ -50,6 +51,10 @@ function parseDeviceLabel(userAgent) {
     /Linux/.test(ua)     ? 'Linux'   : 'Unknown';
   return `${browser} on ${os}`;
 }
+/** Coarse fingerprint for UA binding — stable across version bumps. */
+function deviceFingerprint(userAgent) {
+  return sha256(parseDeviceLabel(userAgent));
+}
 
 async function getMaxDevices(pin) {
   const v = await client.get(k.max(pin));
@@ -64,13 +69,10 @@ async function setMaxDevices(pin, maxDevices) {
   return n;
 }
 
-// Return live sessions for a pin, pruning orphaned hash entries whose lease
-// has already expired. This lazy prune replaces an in-process sweep.
 async function listSessions(pin) {
   const raw = await client.hgetall(k.hash(pin));
   const ids = Object.keys(raw);
   if (!ids.length) return [];
-  // pipeline-check leases
   const pipe = client.pipeline();
   for (const sid of ids) pipe.exists(k.lease(pin, sid));
   const results = await pipe.exec();
@@ -105,7 +107,10 @@ async function createSession(pin, { deviceId, ip, userAgent, workerSocketRef }) 
     deviceId,
     deviceLabel: parseDeviceLabel(userAgent),
     ip: String(ip || ''),
-    userAgentHash: sha256(userAgent || ''),
+    // Coarse fingerprint (browser + OS), NOT full UA hash. See parseDeviceLabel.
+    // Kept as `userAgentHash` for backwards compatibility with any existing
+    // consumers — the value semantics changed but the field name did not.
+    userAgentHash: deviceFingerprint(userAgent),
     connectedAt: Date.now(),
     lastHeartbeat: Date.now(),
     workerSocketRef: workerSocketRef || null,
@@ -133,9 +138,7 @@ async function refreshSession(pin, sessionId, patch = {}) {
   return rec;
 }
 
-async function pinForSession(sessionId) {
-  return client.get(k.map(sessionId));
-}
+async function pinForSession(sessionId) { return client.get(k.map(sessionId)); }
 
 async function removeSession(pin, sessionId) {
   const pipe = client.pipeline();
@@ -145,8 +148,6 @@ async function removeSession(pin, sessionId) {
   await pipe.exec();
 }
 
-// Revocation set (Part 5). Old signed URLs still work until their TTL runs
-// out, but no NEW signed URLs can be minted for a revoked session.
 async function revoke(sessionId, reason = 'kicked') {
   await client.set(k.revoked(sessionId), reason, 'EX', REVOKED_TTL_SEC);
 }
@@ -155,7 +156,6 @@ async function isRevoked(sessionId) {
   return v !== null;
 }
 
-// Publish a kick to whichever worker actually holds the socket.
 async function kick(pin, sessionIdToKick, reason = 'kicked_by_user') {
   const raw = await client.hget(k.hash(pin), sessionIdToKick);
   let record = null;
@@ -176,6 +176,7 @@ module.exports = {
   DEFAULT_MAX_DEVICES,
   HEARTBEAT_TTL_MS,
   parseDeviceLabel,
+  deviceFingerprint,
   sha256,
   getMaxDevices,
   setMaxDevices,
