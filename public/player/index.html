@@ -30,5 +30,34 @@
   </div>
 
   <script src="app.js"></script>
+
+
+
+  <script src="/player/stream-security-client.js"></script>
+<script>
+  const s = new StreamSecurity({ pin: '482910', channelSlug: 'my-channel-slug' });
+  
+  const auth = await s.authorize();
+  
+  if (auth.needsKick) {
+    // Show modal: "This PIN is already streaming on N devices. End one?"
+    // List auth.activeSessions with device labels
+    // User picks one:
+    await s.confirmKick(auth.activeSessions[0].sessionId);
+  }
+  
+  // Listen for kicks from other devices or admin
+  s.connectLifecycleWs();
+  document.addEventListener('oor:session_terminated', () => {
+    hlsPlayer.destroy();  // MUST destroy, not just pause
+    showOverlay('Playback stopped — this account is now streaming on another device.');
+  });
+  
+  // Load the signed manifest
+  hlsPlayer.loadSource(s.manifestUrl());
+</script>
+
+
+  
 </body>
 </html>
