@@ -24,6 +24,12 @@ const analyticsRoutes = require('./routes/analytics');
 const adminRoutes = require('./routes/admin');
 const webhookRoutes = require('./routes/webhooks');
 const metaRoutes = require('./routes/meta');
+// ---- Streaming Security layer (device-limit + signed URLs) -----------------
+const scfg           = require('./streaming_config');          // eslint-disable-line no-unused-vars
+const streamRoutes   = require('./routes/stream');
+const streamingAdmin = require('./routes/streaming_admin');
+const wsStream       = require('./ws_stream');
+
 
 const log = pino({ level: cfg.logLevel });
 
@@ -95,11 +101,16 @@ app.get('/v1/channels/by-slug/:slug/live-config', (req, res, next) => {
   res.json({ live_url: c.live_url, channel_slug: c.slug });
 });
 
+// Streaming security
+app.use('/v1/stream',          streamRoutes);
+app.use('/v1/admin/streaming', streamingAdmin);
+
 app.use(errorHandler);
 
 // ---- HTTP + WS --------------------------------------------------------------
 const server = http.createServer(app);
 ws.attach(server, log);
+wsStream.attach(server, log);
 
 server.listen(cfg.port, '0.0.0.0', () => log.info(`ad-injection v2 on :${cfg.port}  (${cfg.publicUrl})`));
 
