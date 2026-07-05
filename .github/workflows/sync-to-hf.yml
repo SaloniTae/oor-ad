@@ -11,9 +11,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
       - name: Push all branches to HF Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           git remote add hf https://user:$HF_TOKEN@huggingface.co/spaces/oorverse/oor-ad
+          for branch in $(git branch -r | grep origin/ | sed 's/origin\///'); do
+            git checkout -B "$branch" "origin/$branch"
+          done
           git push hf --all --force
