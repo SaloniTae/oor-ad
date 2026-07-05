@@ -2,10 +2,10 @@
 /**
  * Streaming Security admin panel — single-page vanilla JS.
  *
- * All requests go to /v1/admin/streaming/* with a Bearer token that is either
- * a tenant session JWT (from /v1/auth/signin) or a raw API key. Session token
- * lives in sessionStorage so it clears when the tab closes; API key lives in
- * localStorage under a namespaced key.
+ * AUTH: this page reuses the existing admin app's session token
+ * (localStorage 'ai.session'). If the user is already logged in to /admin/,
+ * this page auto-authenticates. Falls back to its own sign-in form only
+ * when no existing session is found. Also supports raw API keys.
  */
 (function () {
   'use strict';
@@ -13,11 +13,28 @@
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  // Storage keys — piggyback on the main admin so a single login covers both.
+  const K_SESSION = 'ai.session';        // set by /admin/ main app
+  const K_TENANT  = 'ai.tenant';         // JSON tenant record
+  const K_APIKEY  = 'secstream.apikey';  // fallback for API-key auth
+
   const S = {
-    get token() { return sessionStorage.getItem('secstream.token') || localStorage.getItem('secstream.apikey') || ''; },
-    setSession(t) { sessionStorage.setItem('secstream.token', t); localStorage.removeItem('secstream.apikey'); },
-    setKey(k)     { localStorage.setItem('secstream.apikey', k); sessionStorage.removeItem('secstream.token'); },
-    clear() { sessionStorage.removeItem('secstream.token'); localStorage.removeItem('secstream.apikey'); },
+    get token() {
+      return localStorage.getItem(K_SESSION) || localStorage.getItem(K_APIKEY) || '';
+    },
+    setSession(t, tenant) {
+      localStorage.setItem(K_SESSION, t);
+      if (tenant) localStorage.setItem(K_TENANT, JSON.stringify(tenant));
+      localStorage.removeItem(K_APIKEY);
+    },
+    setKey(k) {
+      localStorage.setItem(K_APIKEY, k);
+    },
+    clear() {
+      localStorage.removeItem(K_SESSION);
+      localStorage.removeItem(K_TENANT);
+      localStorage.removeItem(K_APIKEY);
+    },
   };
 
   async function api(method, path, body) {
@@ -32,8 +49,7 @@
 
   function fmtTime(ms) {
     if (!ms) return '—';
-    const d = new Date(ms);
-    return d.toLocaleString();
+    return new Date(ms).toLocaleString();
   }
   function fmtSince(ms) {
     if (!ms) return '—';
@@ -50,7 +66,8 @@
     });
     if (!r.ok) throw new Error('sign-in failed');
     const j = await r.json();
-    S.setSession(j.token);
+    // Main admin app expects { session, tenant } — we accept either shape.
+    S.setSession(j.session || j.token, j.tenant);
   }
 
   async function afterAuth() {
@@ -61,7 +78,8 @@
       $('#btn-signout').hidden = false;
       switchTab('pins');
     } catch (e) {
-      S.clear();
+      // Only clear if the token is actually invalid, not on network hiccups.
+      if (e.status === 401) S.clear();
       $('#signin').hidden = false;
       $('#signin-err').textContent = e.message || 'auth failed';
     }
@@ -80,20 +98,24 @@
     S.setKey(k);
     await afterAuth();
   });
-  $('#btn-signout').addEventListener('click', () => { S.clear(); location.reload(); });
+  $('#btn-signout').addEventListener('click', () => { S.clear(); location.href = '/admin/'; });
 
-  const tabs = ['pins', 'sessions', 'revocations', 'edge'];
+  const tabs = ['pins', 'sessions', 'revocations', 'channels', 'edge'];
   function switchTab(name) {
     for (const t of tabs) {
-      $(`#tab-${t}`).hidden = t !== name;
+      const panel = $(`#tab-${t}`);
+      if (panel) panel.hidden = t !== name;
       const btn = document.querySelector(`.tab[data-tab="${t}"]`);
       if (btn) btn.classList.toggle('active', t === name);
     }
     if (name === 'pins')        loadPins();
     if (name === 'revocations') loadRevs();
+    if (name === 'channels')    loadChannels();
     if (name === 'edge')        loadEdge();
   }
   $$('.tab').forEach((b) => b.addEventListener('click', () => switchTab(b.dataset.tab)));
+
+  // ---- PINs ---------------------------------------------------------------
 
   async function loadPins() {
     try {
@@ -123,9 +145,7 @@
             await api('PATCH', `/v1/admin/streaming/pins/${el.dataset.pin}/device-limit`, { maxDevices: Number(el.value) });
             el.style.borderColor = 'var(--ok)';
             setTimeout(() => (el.style.borderColor = ''), 800);
-          } catch (e) {
-            alert('Update failed: ' + e.message);
-          }
+          } catch (e) { alert('Update failed: ' + e.message); }
         });
       });
       tbody.querySelectorAll('[data-view-sessions]').forEach((b) => b.addEventListener('click', () => {
@@ -140,7 +160,28 @@
     } catch (e) { alert('Load failed: ' + e.message); }
   }
 
-  $('#btn-newpin').addEventListener('click', () => { $('#modal-newpin').hidden = false; });
+  // Populate channel dropdown in the create-PIN modal from the main app's channels API.
+  async function loadChannelDropdown(selectEl) {
+    try {
+      const j = await api('GET', '/v1/channels');
+      selectEl.innerHTML = '<option value="">— any channel (unrestricted) —</option>';
+      const items = j.items || j || [];
+      for (const c of items) {
+        const opt = document.createElement('option');
+        opt.value = c.slug;
+        opt.textContent = `${c.name || c.slug} (${c.slug})`;
+        selectEl.appendChild(opt);
+      }
+    } catch {
+      // Fall back to plain text input if we can't fetch — keeps the modal usable.
+    }
+  }
+
+  $('#btn-newpin').addEventListener('click', () => {
+    loadChannelDropdown($('#np-slug'));
+    $('#np-err').textContent = '';
+    $('#modal-newpin').hidden = false;
+  });
   $('#np-cancel').addEventListener('click', () => { $('#modal-newpin').hidden = true; });
   $('#np-create').addEventListener('click', async () => {
     try {
@@ -160,6 +201,8 @@
     } catch (e) { $('#np-err').textContent = e.message; }
   });
 
+  // ---- Sessions -----------------------------------------------------------
+
   let sessTimer = null;
   async function loadSessions() {
     const pin = $('#sess-pin').value.trim();
@@ -168,7 +211,7 @@
       const j = await api('GET', `/v1/admin/streaming/pins/${pin}/sessions`);
       const tbody = $('#sess-tbody');
       tbody.innerHTML = '';
-      if (!j.items.length) { $('#sess-empty').hidden = false; return; }
+      if (!j.items.length) { $('#sess-empty').hidden = false; $('#sess-empty').textContent = 'No active sessions.'; return; }
       $('#sess-empty').hidden = true;
       for (const s of j.items) {
         const tr = document.createElement('tr');
@@ -198,11 +241,19 @@
   });
   sessTimer = setInterval(() => { if (!$('#tab-sessions').hidden) loadSessions(); }, 10_000);
 
+  // ---- Revocations --------------------------------------------------------
+
   async function loadRevs() {
     try {
       const j = await api('GET', '/v1/admin/streaming/revocations?limit=200');
       const tbody = $('#rev-tbody');
       tbody.innerHTML = '';
+      if (!j.items.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="6" class="muted" style="text-align:center;padding:20px">No revocations yet.</td>';
+        tbody.appendChild(tr);
+        return;
+      }
       for (const r of j.items) {
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -217,6 +268,65 @@
     } catch (e) { alert('Load failed: ' + e.message); }
   }
   $('#btn-reloadrev').addEventListener('click', loadRevs);
+
+  // ---- Channels + origin --------------------------------------------------
+
+  const ORIGIN_HELP = {
+    direct: 'App proxies the manifest and signs every URI with our HMAC. Zero setup, works for any HLS origin. Best for getting started.',
+    bunny:  'Bunny.net Pull Zone with Token Authentication. Requires BUNNY_SECURITY_KEY env var. Zero bandwidth cost on your origin — Bunny validates at their edge.',
+    nginx:  'Self-hosted nginx with secure_link module. Requires NGINX_SECURE_LINK_SECRET env var. Zero bandwidth cost on your app — nginx validates at your VPS edge.',
+  };
+
+  async function loadChannels() {
+    try {
+      const j = await api('GET', '/v1/channels');
+      const items = j.items || j || [];
+      const tbody = $('#chan-tbody');
+      tbody.innerHTML = '';
+      if (!items.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = '<td colspan="4" class="muted" style="text-align:center;padding:20px">No channels yet. Create one in the main admin first.</td>';
+        tbody.appendChild(tr);
+        return;
+      }
+      for (const c of items) {
+        let origin = { origin_type: 'direct', origin_base: null };
+        try { origin = await api('GET', `/v1/admin/streaming/channels/${c.id}/origin`); } catch {}
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><b>${c.name || c.slug}</b><div class="muted" style="font-size:11px">${c.slug}</div></td>
+          <td class="mono" style="font-size:11px">${c.live_url ? c.live_url.slice(0,60)+'…' : '—'}</td>
+          <td>
+            <select class="origin-sel" data-cid="${c.id}">
+              <option value="direct" ${origin.origin_type==='direct'?'selected':''}>Direct (app-proxied)</option>
+              <option value="bunny"  ${origin.origin_type==='bunny' ?'selected':''}>Bunny.net</option>
+              <option value="nginx"  ${origin.origin_type==='nginx' ?'selected':''}>My VPS (nginx)</option>
+            </select>
+            <input class="origin-base" data-cid="${c.id}" placeholder="Origin URL (blank = use live_url)" value="${origin.origin_base || ''}" style="width:100%;margin-top:4px">
+          </td>
+          <td><button class="small" data-save-origin="${c.id}">Save</button></td>`;
+        tbody.appendChild(tr);
+      }
+      tbody.querySelectorAll('.origin-sel').forEach((sel) => {
+        sel.addEventListener('change', () => {
+          $('#chan-help').textContent = ORIGIN_HELP[sel.value] || '';
+        });
+      });
+      tbody.querySelectorAll('[data-save-origin]').forEach((b) => b.addEventListener('click', async () => {
+        const cid = b.dataset.saveOrigin;
+        const type = tbody.querySelector(`.origin-sel[data-cid="${cid}"]`).value;
+        const base = tbody.querySelector(`.origin-base[data-cid="${cid}"]`).value.trim() || null;
+        try {
+          await api('PUT', `/v1/admin/streaming/channels/${cid}/origin`, { originType: type, originBase: base });
+          b.textContent = 'Saved ✓';
+          b.style.background = 'var(--ok)';
+          setTimeout(() => { b.textContent = 'Save'; b.style.background = ''; }, 1200);
+        } catch (e) { alert('Save failed: ' + e.message); }
+      }));
+    } catch (e) { alert('Load failed: ' + e.message); }
+  }
+
+  // ---- Edge config --------------------------------------------------------
 
   async function loadEdge() {
     try {
@@ -240,5 +350,11 @@
     } catch (e) { alert('Load failed: ' + e.message); }
   }
 
-  if (S.token) afterAuth();
+  // ---- boot ---------------------------------------------------------------
+
+  if (S.token) {
+    afterAuth();
+  } else {
+    $('#signin').hidden = false;
+  }
 })();
