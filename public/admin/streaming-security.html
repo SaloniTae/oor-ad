@@ -13,18 +13,20 @@
     <button class="tab active" data-tab="pins">PINs &amp; Device Limits</button>
     <button class="tab" data-tab="sessions">Active Sessions</button>
     <button class="tab" data-tab="revocations">Revocation Log</button>
+    <button class="tab" data-tab="channels">Channels &amp; Origins</button>
     <button class="tab" data-tab="edge">Edge Config</button>
   </nav>
   <div class="auth-status">
+    <a href="/admin/" class="backlink">&larr; Main admin</a>
     <span id="auth-label">not signed in</span>
     <button id="btn-signout" hidden>Sign out</button>
   </div>
 </header>
 
-<!-- SIGN-IN GATE -------------------------------------------------------- -->
-<section id="signin" class="panel">
+<!-- SIGN-IN GATE (hidden if already logged into main /admin/) ------------ -->
+<section id="signin" class="panel" hidden>
   <h2>Sign in</h2>
-  <p class="muted">Use your tenant session (email + password) or paste an API key.</p>
+  <p class="muted">You're not signed in. If you already have an admin account, <a href="/admin/">sign in via the main admin</a> and come back — this page will pick up your session automatically.</p>
   <div class="row">
     <label>Email <input id="in-email" type="email" placeholder="admin@example.com"></label>
     <label>Password <input id="in-pw" type="password" placeholder="••••••••"></label>
@@ -81,6 +83,18 @@
   </table>
 </section>
 
+<!-- CHANNELS + ORIGIN --------------------------------------------------- -->
+<section id="tab-channels" class="panel" hidden>
+  <div class="section-head">
+    <h2>Channels &amp; Origins</h2>
+    <p class="muted" id="chan-help">Pick the signing method per channel. Global secrets (BUNNY_SECURITY_KEY / NGINX_SECURE_LINK_SECRET) are set once in env; per-channel choice picks which one to use.</p>
+  </div>
+  <table class="grid">
+    <thead><tr><th>Channel</th><th>Live URL</th><th>Origin type</th><th></th></tr></thead>
+    <tbody id="chan-tbody"></tbody>
+  </table>
+</section>
+
 <!-- EDGE CONFIG --------------------------------------------------------- -->
 <section id="tab-edge" class="panel" hidden>
   <h2>Edge Config Snippets</h2>
@@ -107,15 +121,15 @@
   <div class="modal-body">
     <h3>Create PIN</h3>
     <label>Label <input id="np-label" placeholder="e.g. Alice's account"></label>
-    <label>Channel slug (optional, restricts PIN to that channel)
-      <input id="np-slug" placeholder="channel-slug">
+    <label>Channel (optional, restricts PIN to that channel)
+      <select id="np-slug"><option value="">— any channel (unrestricted) —</option></select>
     </label>
     <label>Max devices <input id="np-max" type="number" value="1" min="1" max="100"></label>
     <label>PIN length
       <select id="np-len"><option>6</option><option>7</option><option>8</option></select>
     </label>
     <label>TTL (seconds, blank = never expires)
-      <input id="np-ttl" type="number" placeholder="86400">
+      <input id="np-ttl" type="number" placeholder="e.g. 86400 for 1 day">
     </label>
     <div class="row">
       <button id="np-create">Create</button>
