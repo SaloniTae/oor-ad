@@ -69,13 +69,18 @@ async function requireStreamSession(req, _res, next) {
   next();
 }
 
+// UA-change soft binding (Part 6.2).
+// Uses COARSE fingerprint (browser family + OS family) — NOT full UA hash.
+// See session_registry.deviceFingerprint. Chrome auto-updates do NOT kick;
+// switching browsers on the same session DOES kick (real token-replay signal).
 async function checkUaBinding(req, streamPayload) {
   const list = await registry.listSessions(streamPayload.pin);
   const sess = list.find((s) => s.sessionId === streamPayload.sid);
   if (!sess) return { ok: false, reason: 'session_gone' };
   const ua = clientUA(req);
-  const hash = registry.sha256(ua);
-  if (hash !== sess.userAgentHash) {
+  // Coarse browser+OS fingerprint (not full UA hash) — see session_registry.
+  const fp = registry.deviceFingerprint(ua);
+  if (fp !== sess.userAgentHash) {
     await registry.kick(streamPayload.pin, streamPayload.sid, 'ua_change_detected');
     pins.logRevocation({
       tenantId: null, pin: streamPayload.pin, sessionId: streamPayload.sid,
