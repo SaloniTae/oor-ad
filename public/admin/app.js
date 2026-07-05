@@ -91,6 +91,23 @@ function logout() {
 }
 function isAdmin() { return state.tenant?.plan === 'admin'; }
 
+// ---- theme (shared with streaming-security page via 'ai.theme') ------------
+const THEME_MQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+function themePref() { return localStorage.getItem('ai.theme') || 'auto'; }
+function themeEffective(t) { return t === 'auto' ? (THEME_MQ && THEME_MQ.matches ? 'light' : 'dark') : t; }
+function applyTheme(t) { document.documentElement.setAttribute('data-theme', themeEffective(t)); }
+function themeIcon(t) { return t === 'light' ? '☀️' : t === 'dark' ? '🌙' : '🌗'; }
+function cycleTheme() {
+  const order = ['auto', 'dark', 'light'];
+  const next = order[(order.indexOf(themePref()) + 1) % order.length];
+  localStorage.setItem('ai.theme', next);
+  applyTheme(next);
+  const btn = document.querySelector('[data-act=theme]');
+  if (btn) btn.textContent = themeIcon(next);
+}
+applyTheme(themePref());
+if (THEME_MQ && THEME_MQ.addEventListener) THEME_MQ.addEventListener('change', () => { if (themePref() === 'auto') applyTheme('auto'); });
+
 // ---- dashboard shell -------------------------------------------------------
 function renderDash() {
   const n = clone('tpl-dash');
@@ -98,7 +115,9 @@ function renderDash() {
   document.querySelector('[data-who]').textContent =
     (state.tenant?.email || '') + (isAdmin() ? ' — ADMIN' : '');
   document.querySelector('[data-act=logout]').onclick = logout;
-  
+  const themeBtn = document.querySelector('[data-act=theme]');
+  if (themeBtn) { themeBtn.textContent = themeIcon(themePref()); themeBtn.onclick = cycleTheme; }
+
   // Show/hide admin-only nav
   document.querySelectorAll('.top nav a[data-admin]').forEach(a => a.classList.toggle('hidden', !isAdmin()));
   document.querySelectorAll('.top nav a[data-nav]').forEach(a => a.onclick = () => nav(a.dataset.nav));
@@ -325,8 +344,10 @@ async function openChannel(c, view) {
       triggerErr.className = 'ok';
       stagedPod = [];
       renderStager();
-    } catch (e) { 
-      triggerErr.className = 'err'; triggerErr.textContent = e.message; 
+    } catch (e) {
+      triggerErr.className = 'err'; triggerErr.textContent = e.message;
+    } finally {
+      // Always restore the button — on success AND error — so it never sticks on "Triggering…".
       doTrigger.disabled = false;
       doTrigger.textContent = 'Trigger Commercial Break';
     }
@@ -344,7 +365,15 @@ async function openChannel(c, view) {
   renderStager();
 
   const doResume = h('button', { class: 'danger', style: 'width: 100%; justify-content: center; padding: 12px; margin-top: 12px; font-weight: 600;', onclick: async () => {
-    try { await api('POST', `/v1/channels/${ch.id}/resume`); triggerErr.className='ok'; triggerErr.textContent='Force Resumed Live'; } catch(e){triggerErr.className='err';triggerErr.textContent=e.message;}
+    try {
+      await api('POST', `/v1/channels/${ch.id}/resume`);
+      triggerErr.className='ok'; triggerErr.textContent='Force Resumed Live';
+    } catch(e){ triggerErr.className='err'; triggerErr.textContent=e.message; }
+    finally {
+      // Return the trigger control to a clean idle state after a cancel.
+      doTrigger.disabled = false;
+      doTrigger.textContent = 'Trigger Commercial Break';
+    }
   }}, 'Force Resume Live (Cancel Ads)');
 
   const podSequencerCard = h('div', { class: 'card' },
@@ -355,6 +384,87 @@ async function openChannel(c, view) {
     doTrigger,
     doResume,
     triggerErr
+  );
+
+  // ==== STREAMING SECURITY CARD (one system: PIN + device limit + signed link) ====
+  const secSettings = { ...(ch.settings || {}) };
+
+  const requireToggle = h('input', { type: 'checkbox', ...(secSettings.requirePin ? { checked: true } : {}) });
+  const toggleStatus = h('span', { class: secSettings.requirePin ? 'ok' : 'muted', style: 'font-size:13px' },
+    secSettings.requirePin ? 'PIN required — players must authorize before playback.' : 'Open — anyone with the link can watch.');
+  requireToggle.onchange = async () => {
+    const on = requireToggle.checked;
+    try {
+      const next = { ...secSettings, requirePin: on };
+      await api('PATCH', `/v1/channels/${ch.id}`, { settings: next });
+      secSettings.requirePin = on; ch.settings = next;
+      toggleStatus.className = on ? 'ok' : 'muted';
+      toggleStatus.textContent = on ? 'PIN required — players must authorize before playback.' : 'Open — anyone with the link can watch.';
+    } catch (e) { requireToggle.checked = !on; toggleStatus.className = 'err'; toggleStatus.textContent = e.message; }
+  };
+
+  const pinListEl = h('div', { style: 'margin-top:8px' }, h('div', { class: 'muted' }, 'Loading PINs…'));
+  async function reloadPins() {
+    pinListEl.innerHTML = '';
+    try {
+      const j = await api('GET', '/v1/admin/streaming/pins');
+      const mine = (j.items || []).filter((p) => p.channelId === ch.id);
+      if (!mine.length) { pinListEl.append(h('div', { class: 'muted' }, 'No PINs for this channel yet — create one below.')); return; }
+      pinListEl.append(tbl(['PIN', 'Label', 'Max devices', ''], mine.map((p) => [
+        h('span', { style: 'font-family:ui-monospace,monospace;font-weight:700;letter-spacing:1.5px;color:var(--accent-red)' }, p.pin),
+        p.label || '—',
+        String(p.maxDevices),
+        h('button', { class: 'small danger', onclick: async () => {
+          if (!confirm('Disable this PIN? Active sessions remain until they expire.')) return;
+          try { await api('DELETE', `/v1/admin/streaming/pins/${p.pin}`); reloadPins(); } catch (e) { alert(e.message); }
+        } }, p.disabled ? 'Disabled' : 'Disable'),
+      ])));
+    } catch (e) { pinListEl.append(h('div', { class: 'err' }, 'Could not load PINs: ' + e.message)); }
+  }
+  reloadPins();
+
+  const npLabel = h('input', { placeholder: 'Label (e.g. Alice)', style: 'max-width:220px' });
+  const npMax = h('input', { type: 'number', value: '1', min: '1', max: '100', style: 'width:120px' });
+  const npErr = h('div', { class: 'err' });
+  const npCreate = h('button', { class: 'primary', onclick: async () => {
+    try {
+      npCreate.disabled = true;
+      const r = await api('POST', '/v1/admin/streaming/pins', {
+        channelSlug: ch.slug, label: npLabel.value.trim() || null, maxDevices: Number(npMax.value) || 1,
+      });
+      npErr.className = 'ok'; npErr.textContent = `PIN created: ${r.pin} — shown once, share it with the viewer.`;
+      npLabel.value = '';
+      reloadPins();
+    } catch (e) { npErr.className = 'err'; npErr.textContent = e.message; }
+    finally { npCreate.disabled = false; }
+  } }, 'Create PIN');
+
+  const securityCard = h('div', { class: 'card' },
+    h('h2', {}, '🔒 Streaming Security'),
+    h('div', { class: 'muted', style: 'margin-bottom:16px' }, 'PIN, device limit and signed playback are one system: enable it here and the same player link enforces it. Advanced controls (active sessions, revocations, origins) live in ',
+      h('a', { href: '/admin/streaming-security.html', style: 'color:var(--accent-red)' }, 'Stream Security'), '.'),
+    h('label', { class: 'chk', style: 'display:flex;align-items:center;gap:10px;text-transform:none;font-size:14px' },
+      requireToggle, h('span', {}, 'Require PIN & device limit for this channel')),
+    h('div', { style: 'margin:6px 0 18px' }, toggleStatus),
+    h('div', { class: 'row', style: 'margin-bottom:14px' },
+      h('button', { onclick: async () => {
+        try {
+          const r = await api('POST', `/v1/channels/${ch.id}/viewer-token`, {});
+          const url = `${location.origin}/player/?ws=${encodeURIComponent(r.ws_url)}`;
+          await copy(url).catch(() => {});
+          prompt('Secure player link (enforces PIN when enabled) — copied to clipboard:', url);
+        } catch (e) { alert(e.message); }
+      } }, 'Copy secure player link'),
+      h('button', { onclick: () => openViewer(ch) }, 'Open player'),
+    ),
+    h('h3', { style: 'text-transform:uppercase;font-size:12px;letter-spacing:0.5px;color:var(--text-muted);margin:6px 0 4px' }, 'PINs for this channel'),
+    pinListEl,
+    h('div', { class: 'row', style: 'margin-top:14px;align-items:end' },
+      h('label', { style: 'margin:0' }, 'Label', npLabel),
+      h('label', { style: 'margin:0' }, 'Max devices', npMax),
+      npCreate,
+    ),
+    npErr,
   );
 
   wrap.append(
@@ -382,6 +492,7 @@ async function openChannel(c, view) {
         h('button', { onclick: () => openViewer(ch) }, 'Open player'),
       ),
     ),
+    securityCard,
     telemetryCard,
     podSequencerCard,
     h('div', { class: 'card' },

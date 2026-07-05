@@ -65,9 +65,15 @@ function attach(server, log) {
     join(channel.id, ws);
     insertEvent.run(channel.tenant_id, channel.id, null, null, ws.viewerId, 'viewer.connect', null, auth.now());
 
+    // Per-channel streaming-security flag lives in the channel settings blob.
+    // When set, the player must gate playback behind a PIN + device limit and
+    // load the signed manifest instead of the raw live_url.
+    let requirePin = false;
+    try { requirePin = !!JSON.parse(channel.settings || '{}').requirePin; } catch { requirePin = false; }
+
     safeSend(ws, {
       type: 'welcome',
-      channel: { id: channel.id, slug: channel.slug, name: channel.name, liveUrl: channel.live_url },
+      channel: { id: channel.id, slug: channel.slug, name: channel.name, liveUrl: channel.live_url, requirePin },
       viewerId: ws.viewerId,
       ts: Date.now(),
     });

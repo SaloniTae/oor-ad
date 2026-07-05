@@ -103,3 +103,128 @@ html, body {
   .badge { bottom: 20px; left: 20px; font-size: 12px; padding: 8px 14px; }
   .unmute-btn { top: 16px; right: 16px; font-size: 12px; padding: 8px 16px; }
 }
+
+/* ============================================================================
+   Streaming Security overlays — liquid-glass PIN gate / device modal / kick.
+   Auto dark/light, responsive. The video stage behind stays full-bleed black.
+   ============================================================================ */
+:root {
+  --sec-scrim: rgba(6, 7, 10, 0.72);
+  --sec-card-bg: rgba(22, 24, 30, 0.55);
+  --sec-card-border: rgba(255, 255, 255, 0.12);
+  --sec-card-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  --sec-text: #f4f6fb;
+  --sec-muted: #9aa2b4;
+  --sec-field-bg: rgba(255, 255, 255, 0.06);
+  --sec-field-border: rgba(255, 255, 255, 0.14);
+  --sec-accent: #4f7cff;
+  --sec-accent-2: #6f97ff;
+  --sec-danger: #ff5a6a;
+  --sec-ok: #45c17e;
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    --sec-scrim: rgba(228, 232, 240, 0.72);
+    --sec-card-bg: rgba(255, 255, 255, 0.62);
+    --sec-card-border: rgba(15, 20, 35, 0.10);
+    --sec-card-shadow: 0 24px 70px rgba(20, 30, 60, 0.20);
+    --sec-text: #131722;
+    --sec-muted: #5a6473;
+    --sec-field-bg: rgba(15, 20, 35, 0.04);
+    --sec-field-border: rgba(15, 20, 35, 0.14);
+  }
+}
+
+.sec-overlay {
+  position: absolute; inset: 0; z-index: 50;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+  background: var(--sec-scrim);
+  backdrop-filter: blur(22px) saturate(1.2);
+  -webkit-backdrop-filter: blur(22px) saturate(1.2);
+  animation: sec-fade 0.28s ease both;
+}
+.sec-overlay[hidden] { display: none; }
+
+@keyframes sec-fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes sec-rise { from { opacity: 0; transform: translateY(14px) scale(0.985); } to { opacity: 1; transform: none; } }
+
+.sec-card {
+  width: 100%; max-width: 400px;
+  padding: 34px 30px 28px;
+  border-radius: 22px;
+  background: var(--sec-card-bg);
+  border: 1px solid var(--sec-card-border);
+  box-shadow: var(--sec-card-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(30px) saturate(1.4);
+  -webkit-backdrop-filter: blur(30px) saturate(1.4);
+  color: var(--sec-text);
+  text-align: center;
+  animation: sec-rise 0.34s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.sec-lock {
+  width: 62px; height: 62px; margin: 0 auto 18px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 18px;
+  color: #fff;
+  background: linear-gradient(150deg, var(--sec-accent), var(--sec-accent-2));
+  box-shadow: 0 10px 26px rgba(79, 124, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+.sec-lock-warn {
+  background: linear-gradient(150deg, #ff5a6a, #ff8a5a);
+  box-shadow: 0 10px 26px rgba(255, 90, 106, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.sec-title { margin: 0 0 6px; font-size: 21px; font-weight: 700; letter-spacing: -0.02em; }
+.sec-sub { margin: 0 0 22px; font-size: 13.5px; line-height: 1.5; color: var(--sec-muted); }
+
+#sec-gate-form { display: flex; flex-direction: column; gap: 12px; }
+.sec-pin-input {
+  width: 100%; padding: 15px 16px;
+  border-radius: 14px;
+  background: var(--sec-field-bg);
+  border: 1px solid var(--sec-field-border);
+  color: var(--sec-text);
+  font-family: "SF Mono", ui-monospace, Menlo, monospace;
+  font-size: 26px; font-weight: 600; text-align: center; letter-spacing: 0.5em;
+  text-indent: 0.5em; /* balance the trailing letter-spacing */
+  outline: none; transition: border-color 0.18s, box-shadow 0.18s;
+}
+.sec-pin-input::placeholder { color: var(--sec-muted); letter-spacing: 0.4em; }
+.sec-pin-input:focus { border-color: var(--sec-accent); box-shadow: 0 0 0 4px rgba(79, 124, 255, 0.18); }
+
+.sec-btn {
+  width: 100%; padding: 13px 18px;
+  border-radius: 14px; border: 1px solid transparent;
+  font: inherit; font-size: 15px; font-weight: 600; cursor: pointer;
+  transition: filter 0.18s, background 0.18s, transform 0.08s, border-color 0.18s;
+}
+.sec-btn:active { transform: scale(0.985); }
+.sec-btn-primary { background: linear-gradient(150deg, var(--sec-accent), var(--sec-accent-2)); color: #fff; box-shadow: 0 8px 22px rgba(79, 124, 255, 0.34); }
+.sec-btn-primary:hover { filter: brightness(1.07); }
+.sec-btn-ghost { background: var(--sec-field-bg); color: var(--sec-text); border-color: var(--sec-field-border); margin-top: 10px; }
+.sec-btn-ghost:hover { border-color: var(--sec-muted); }
+.sec-btn-danger { background: rgba(255, 90, 106, 0.16); color: var(--sec-danger); border-color: rgba(255, 90, 106, 0.32); }
+.sec-btn-danger:hover { background: rgba(255, 90, 106, 0.26); }
+
+.sec-err { margin-top: 12px; min-height: 1.1em; font-size: 13px; color: var(--sec-danger); }
+
+.sec-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 4px; text-align: left; }
+.sec-device {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 14px; border-radius: 14px;
+  background: var(--sec-field-bg); border: 1px solid var(--sec-field-border);
+}
+.sec-device-meta { flex: 1; min-width: 0; }
+.sec-device-name { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sec-device-sub { font-size: 11.5px; color: var(--sec-muted); margin-top: 2px; }
+.sec-device-end { width: auto; flex: none; padding: 9px 14px; font-size: 12.5px; border-radius: 11px; }
+
+@media (max-width: 480px) {
+  .sec-card { padding: 28px 20px 22px; border-radius: 20px; }
+  .sec-title { font-size: 19px; }
+  .sec-pin-input { font-size: 22px; }
+  .sec-device { flex-direction: column; align-items: stretch; }
+  .sec-device-end { width: 100%; }
+}

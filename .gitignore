@@ -1,0 +1,9 @@
+# Added by code-review-graph
+.code-review-graph/
+node_modules/
+server/node_modules/
+.env
+server/.env
+.crg-venv/
+.claude/
+server/data/

@@ -13,6 +13,32 @@
   const $ = (sel) => document.querySelector(sel);
   const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
+  // ---- Theme (shared with main admin via localStorage 'ai.theme') ----------
+  // Resolve 'auto' to an explicit data-theme so CSS only keys off
+  // [data-theme="light"] / [data-theme="dark"] (no fighting media queries).
+  const K_THEME = 'ai.theme';
+  const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)');
+  function currentTheme() { return localStorage.getItem(K_THEME) || 'auto'; }
+  function effective(t) { return t === 'auto' ? (prefersLight && prefersLight.matches ? 'light' : 'dark') : t; }
+  function applyTheme(t) { document.documentElement.setAttribute('data-theme', effective(t)); }
+  function themeIcon(t) { return t === 'light' ? '☀️' : t === 'dark' ? '🌙' : '🌗'; }
+  function cycleTheme() {
+    const order = ['auto', 'dark', 'light'];
+    const next = order[(order.indexOf(currentTheme()) + 1) % order.length];
+    localStorage.setItem(K_THEME, next);
+    applyTheme(next);
+    const btn = $('#btn-theme');
+    if (btn) btn.textContent = themeIcon(next);
+  }
+  applyTheme(currentTheme());
+  if (prefersLight && prefersLight.addEventListener) {
+    prefersLight.addEventListener('change', () => { if (currentTheme() === 'auto') applyTheme('auto'); });
+  }
+  window.addEventListener('DOMContentLoaded', () => {
+    const btn = $('#btn-theme');
+    if (btn) { btn.textContent = themeIcon(currentTheme()); btn.addEventListener('click', cycleTheme); }
+  });
+
   // Storage keys — piggyback on the main admin so a single login covers both.
   const K_SESSION = 'ai.session';        // set by /admin/ main app
   const K_TENANT  = 'ai.tenant';         // JSON tenant record
@@ -177,12 +203,17 @@
     }
   }
 
+  function openModal(id)  { const m = $(id); m.hidden = false; m.classList.add('open'); }
+  function closeModal(id)  { const m = $(id); m.classList.remove('open'); m.hidden = true; }
+
   $('#btn-newpin').addEventListener('click', () => {
     loadChannelDropdown($('#np-slug'));
     $('#np-err').textContent = '';
-    $('#modal-newpin').hidden = false;
+    openModal('#modal-newpin');
   });
-  $('#np-cancel').addEventListener('click', () => { $('#modal-newpin').hidden = true; });
+  $('#np-cancel').addEventListener('click', () => closeModal('#modal-newpin'));
+  // Click the backdrop (outside the card) to dismiss.
+  $('#modal-newpin').addEventListener('click', (e) => { if (e.target.id === 'modal-newpin') closeModal('#modal-newpin'); });
   $('#np-create').addEventListener('click', async () => {
     try {
       $('#np-err').textContent = '';
@@ -195,7 +226,7 @@
       const ttl = Number($('#np-ttl').value);
       if (ttl > 0) body.ttlSeconds = ttl;
       const j = await api('POST', '/v1/admin/streaming/pins', body);
-      $('#modal-newpin').hidden = true;
+      closeModal('#modal-newpin');
       alert(`PIN created: ${j.pin}\n\nGive this to the viewer. It's shown once.`);
       loadPins();
     } catch (e) { $('#np-err').textContent = e.message; }

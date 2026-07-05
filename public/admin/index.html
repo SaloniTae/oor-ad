@@ -8,6 +8,18 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css" />
+  <script>
+    // Resolve theme before first paint to avoid a flash. 'auto' follows the OS.
+    (function () {
+      try {
+        var t = localStorage.getItem('ai.theme') || 'auto';
+        var eff = t === 'auto'
+          ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
+          : t;
+        document.documentElement.setAttribute('data-theme', eff);
+      } catch (e) { document.documentElement.setAttribute('data-theme', 'dark'); }
+    })();
+  </script>
 </head>
 <body>
   <!-- Ambient Background Glows -->
@@ -60,7 +72,7 @@
         <a data-nav="platform" data-admin class="hidden admin-tab">Platform</a>
         <a data-nav="audit"    data-admin class="hidden admin-tab">Audit</a>
       </nav>
-      <div class="who"><span data-who></span> <button data-act="logout" class="danger small" style="margin-left: 12px;">Log out</button></div>
+      <div class="who"><span data-who></span> <button data-act="theme" class="small" title="Toggle theme (auto / dark / light)" aria-label="Toggle theme" style="margin-left: 12px; width: 38px; padding: 6px 0;">🌗</button> <button data-act="logout" class="danger small" style="margin-left: 8px;">Log out</button></div>
     </header>
     <main id="view"></main>
   </template>
