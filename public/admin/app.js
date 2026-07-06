@@ -93,7 +93,7 @@ function isAdmin() { return state.tenant?.plan === 'admin'; }
 
 // ---- theme (shared with streaming-security page via 'ai.theme') ------------
 const THEME_MQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
-function themePref() { return localStorage.getItem('ai.theme') || 'auto'; }
+function themePref() { return localStorage.getItem('ai.theme') || 'dark'; }
 function themeEffective(t) { return t === 'auto' ? (THEME_MQ && THEME_MQ.matches ? 'light' : 'dark') : t; }
 function applyTheme(t) { document.documentElement.setAttribute('data-theme', themeEffective(t)); }
 function themeIcon(t) { return t === 'light' ? '☀️' : t === 'dark' ? '🌙' : '🌗'; }
@@ -247,7 +247,7 @@ async function openChannel(c, view) {
     try {
       const { state, viewers } = await api('GET', `/v1/channels/${ch.id}/state`);
       if (state.mode === 'live') {
-        teleStatus.innerHTML = `<div style="color:#4ade80; font-weight:700; font-size:18px; margin-bottom:4px;">● BROADCAST LIVE</div><div class="muted">Connected Viewers: ${viewers}</div>`;
+        teleStatus.innerHTML = `<div style="color:var(--ok); font-weight:700; font-size:18px; margin-bottom:4px; letter-spacing:-0.01em;">● BROADCAST LIVE</div><div class="muted">Connected Viewers: ${viewers}</div>`;
       } else if (state.mode === 'pod' || state.mode === 'ad') {
         const pod = state.pod || [{ duration: state.duration }];
         const elapsed = Math.max(0, (Date.now() - state.startAt) / 1000);
@@ -270,10 +270,10 @@ async function openChannel(c, view) {
         }
         
         teleStatus.innerHTML = `
-          <div style="color:#ff4d5e; font-weight:700; font-size:18px;">● COMMERCIAL BREAK (${Math.ceil(remaining)}s left)</div>
-          <div style="margin-top: 10px; font-size:14px;">Current Phase: <b>${phase}</b></div>
-          <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-top: 14px; overflow: hidden;">
-             <div style="width: ${Math.min(100, (elapsed/total)*100)}%; height: 100%; background: #ff4d5e; border-radius: 4px; transition: width 1s linear;"></div>
+          <div style="color:var(--accent-red); font-weight:700; font-size:18px; letter-spacing:-0.01em;">● COMMERCIAL BREAK (${Math.ceil(remaining)}s left)</div>
+          <div style="margin-top: 10px; font-size:14px; color:var(--text-2);">Current Phase: <b style="color:var(--text-main)">${phase}</b></div>
+          <div style="width: 100%; height: 8px; background: var(--surface-3); border-radius: 999px; margin-top: 14px; overflow: hidden;">
+             <div style="width: ${Math.min(100, (elapsed/total)*100)}%; height: 100%; background: var(--accent-red); border-radius: 999px; transition: width 1s linear;"></div>
           </div>
           <div style="margin-top: 14px; font-size: 13px;" class="muted">Connected Viewers: ${viewers}</div>
         `;
@@ -303,7 +303,7 @@ async function openChannel(c, view) {
       const durOptions = [5, 10, 15, 30, ad.duration_seconds].filter((v, i, a) => a.indexOf(v) === i).sort((a,b)=>a-b);
       const durPills = h('div', { style: 'display:flex; gap: 6px; margin-top: 8px; overflow-x: auto;' },
         ...durOptions.map(d => {
-          const pill = h('button', { class: `small ${d === ad.override_duration ? 'primary' : ''}`, style: d !== ad.override_duration ? 'background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);' : '', onclick: () => {
+          const pill = h('button', { class: `small ${d === ad.override_duration ? 'primary' : ''}`, style: d !== ad.override_duration ? 'background: var(--surface-2); border: 1px solid var(--border);' : '', onclick: () => {
             ad.override_duration = d;
             renderStager();
           }}, `${d}s`);
@@ -312,7 +312,7 @@ async function openChannel(c, view) {
         })
       );
 
-      list.append(h('div', { class: 'card', style: 'padding: 14px; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center; border-color: rgba(255, 77, 94, 0.4); background: rgba(255, 77, 94, 0.08);' }, 
+      list.append(h('div', { class: 'card', style: 'padding: 14px; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center; border-color: color-mix(in srgb, var(--accent-red) 35%, transparent); background: var(--accent-soft);' },
         h('div', { style: 'flex-grow: 1;' }, 
           h('div', { style: 'font-weight: 600; font-size: 14px; display:flex; align-items:center; gap:8px;' }, h('span', {style:'opacity:0.5;'}, `${idx + 1}.`), ad.name),
           durPills
@@ -353,9 +353,9 @@ async function openChannel(c, view) {
     }
   }}, 'Trigger Commercial Break');
 
-  const adsListContainer = h('div', { style: 'max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--glass-border); padding: 12px; border-radius: 12px; background: rgba(0,0,0,0.3);' },
+  const adsListContainer = h('div', { style: 'max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); padding: 12px; border-radius: 14px; background: var(--surface-2);' },
     ...(adsRes.ads.length ? adsRes.ads.map(a => {
-      return h('div', { class: 'row', style: 'justify-content: space-between; padding: 10px 14px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); transition: background 0.2s;' },
+      return h('div', { class: 'row', style: 'justify-content: space-between; padding: 10px 14px; background: var(--surface-1); border-radius: 10px; border: 1px solid var(--border); transition: background 0.2s;' },
         h('div', { style: 'font-size: 13px; font-weight: 500;' }, `${a.name} `, h('span', { class: 'muted', style: 'margin-left:8px; font-size: 11px;' }, `${a.type.toUpperCase()} • ${a.duration_seconds}s`)),
         h('button', { class: 'small outline', onclick: () => { stagedPod.push({ ...a, override_duration: a.duration_seconds }); renderStager(); } }, '+ Add')
       );

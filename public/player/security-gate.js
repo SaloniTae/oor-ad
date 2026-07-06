@@ -86,6 +86,7 @@
   function showGate() {
     hide(devices); hide(term); show(gate);
     gateErr.textContent = '';
+    pinInput.value = '';   // clear any prior entry so a retry never concatenates
     setTimeout(function () { try { pinInput.focus(); } catch (e) {} }, 50);
   }
 

@@ -109,8 +109,23 @@ app.use(errorHandler);
 
 // ---- HTTP + WS --------------------------------------------------------------
 const server = http.createServer(app);
-ws.attach(server, log);
-wsStream.attach(server, log);
+// Both hubs are noServer WebSocketServers; one upgrade handler routes by path.
+// (Attaching two { server, path } WSS to the same server makes them race on the
+// 'upgrade' event and destroy each other's sockets — the "Invalid frame header"
+// bug that took down the ad-injection /ws.)
+const viewerWss = ws.attach(server, log);
+const streamWss = wsStream.attach(server, log);
+server.on('upgrade', (req, socket, head) => {
+  let pathname = '/';
+  try { pathname = new URL(req.url, 'http://localhost').pathname; } catch { /* keep default */ }
+  if (pathname === '/ws') {
+    viewerWss.handleUpgrade(req, socket, head, (client) => viewerWss.emit('connection', client, req));
+  } else if (pathname === '/stream-ws') {
+    streamWss.handleUpgrade(req, socket, head, (client) => streamWss.emit('connection', client, req));
+  } else {
+    socket.destroy();
+  }
+});
 
 server.listen(cfg.port, '0.0.0.0', () => log.info(`ad-injection v2 on :${cfg.port}  (${cfg.publicUrl})`));
 

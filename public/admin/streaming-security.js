@@ -18,7 +18,7 @@
   // [data-theme="light"] / [data-theme="dark"] (no fighting media queries).
   const K_THEME = 'ai.theme';
   const prefersLight = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)');
-  function currentTheme() { return localStorage.getItem(K_THEME) || 'auto'; }
+  function currentTheme() { return localStorage.getItem(K_THEME) || 'dark'; }
   function effective(t) { return t === 'auto' ? (prefersLight && prefersLight.matches ? 'light' : 'dark') : t; }
   function applyTheme(t) { document.documentElement.setAttribute('data-theme', effective(t)); }
   function themeIcon(t) { return t === 'light' ? '☀️' : t === 'dark' ? '🌙' : '🌗'; }

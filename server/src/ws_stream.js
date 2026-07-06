@@ -27,7 +27,8 @@ function verify(token) {
 }
 
 function attach(server, log) {
-  const wss = new WebSocketServer({ server, path: '/stream-ws', maxPayload: 4 * 1024 });
+  // noServer: dispatched by the single upgrade router in index.js (see ws.js).
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
 
   wss.on('connection', async (ws, req) => {
     const q = url.parse(req.url, true).query;

@@ -45,7 +45,10 @@ function countViewers(channelId) { return (rooms.get(channelId) || new Set()).si
 function totalViewers() { let n = 0; for (const s of rooms.values()) n += s.size; return n; }
 
 function attach(server, log) {
-  const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4 * 1024 });
+  // noServer: the single upgrade router in index.js dispatches by path. Do NOT
+  // use { server, path } here — two path-scoped WebSocketServers on the same
+  // http server race on 'upgrade' and destroy each other's sockets.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
 
   wss.on('connection', (ws, req) => {
     const q = url.parse(req.url, true).query;

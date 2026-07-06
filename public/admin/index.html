@@ -12,7 +12,7 @@
     // Resolve theme before first paint to avoid a flash. 'auto' follows the OS.
     (function () {
       try {
-        var t = localStorage.getItem('ai.theme') || 'auto';
+        var t = localStorage.getItem('ai.theme') || 'dark';
         var eff = t === 'auto'
           ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark')
           : t;
@@ -33,7 +33,7 @@
   <template id="tpl-auth">
     <div class="wrap narrow glass-panel" style="margin-top: 10vh;">
       <div class="brand" style="text-align: center; margin-bottom: 30px; font-size: 24px; font-weight: 800; letter-spacing: 2px;">
-        OORMAX <span style="color: #ff2a2a;">PLAYOUT</span>
+        OORMAX <span class="brand-accent">PLAYOUT</span>
       </div>
       <div class="tabs">
         <button data-tab="login" class="active">Login</button>
@@ -60,7 +60,7 @@
   <!-- Dashboard Shell Template -->
   <template id="tpl-dash">
     <header class="top glass-panel nav-island">
-      <div class="brand">OORMAX <span style="color: #ff2a2a;">PLAYOUT</span></div>
+      <div class="brand">OORMAX <span class="brand-accent">PLAYOUT</span></div>
       <nav>
         <a data-nav="overview" class="active">Overview</a>
         <a data-nav="channels">Channels</a>
