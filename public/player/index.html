@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Live Player</title>
   <link rel="stylesheet" href="style.css" />
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
@@ -20,15 +20,13 @@
     <!-- Premium UI overlays occupying the same location -->
     <div id="loading" class="badge">We'll be right back</div>
     <div id="badge" class="badge">Ad will end in <span id="countdown">0</span>s</div>
-
+    
     <button id="unmute" class="unmute-btn">Tap to Unmute</button>
 
     <!-- ===================================================================
-         STREAMING SECURITY OVERLAYS
-         Shown only when the channel requires a PIN. app.js drives them.
+         STREAMING SECURITY overlays (additive — do not affect ad playback).
+         Driven by security-gate.js. Hidden entirely for open channels.
          =================================================================== -->
-
-    <!-- PIN gate: first thing a viewer sees on a secured channel -->
     <div id="sec-gate" class="sec-overlay" hidden>
       <div class="sec-card">
         <div class="sec-lock" aria-hidden="true">
@@ -45,21 +43,19 @@
       </div>
     </div>
 
-    <!-- Device-limit modal: shown on 409, lists active sessions to end -->
     <div id="sec-devices" class="sec-overlay" hidden>
       <div class="sec-card">
         <div class="sec-lock sec-lock-warn" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="4.5" width="14" height="10" rx="1.6"/><path d="M6 18h7"/><path d="M9.5 14.5V18"/><rect x="18" y="9" width="4" height="9" rx="1.2"/></svg>
         </div>
-        <h1 class="sec-title">Device limit reached</h1>
-        <p class="sec-sub" id="sec-devices-sub">This PIN is already streaming on another device. End one to watch here.</p>
+        <h1 class="sec-title">Already watching elsewhere</h1>
+        <p class="sec-sub" id="sec-devices-sub">This PIN is in use on another device. You can end that session to watch here, or go back and try later.</p>
         <div id="sec-devices-list" class="sec-list"></div>
-        <button id="sec-devices-cancel" class="sec-btn sec-btn-ghost" type="button">Cancel</button>
+        <button id="sec-devices-back" class="sec-btn sec-btn-ghost" type="button">← Back</button>
         <div id="sec-devices-err" class="sec-err" role="alert"></div>
       </div>
     </div>
 
-    <!-- Terminated overlay: kicked by another device or by the admin -->
     <div id="sec-terminated" class="sec-overlay" hidden>
       <div class="sec-card">
         <div class="sec-lock sec-lock-warn" aria-hidden="true">
@@ -77,8 +73,9 @@
     <span id="status"></span><span id="mode"></span><span id="cid"></span><span id="ch"></span>
   </div>
 
-  <!-- Security client MUST load before app.js so window.StreamSecurity exists. -->
+  <!-- The security gate boots the pristine ad-injection app.js: open channels
+       immediately, secured channels only after PIN + device-limit pass. -->
   <script src="/player/stream-security-client.js"></script>
-  <script src="app.js"></script>
+  <script src="/player/security-gate.js"></script>
 </body>
 </html>

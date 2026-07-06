@@ -69,25 +69,34 @@ async function requireStreamSession(req, _res, next) {
   next();
 }
 
-// UA-change soft binding (Part 6.2).
-// Uses COARSE fingerprint (browser family + OS family) — NOT full UA hash.
-// See session_registry.deviceFingerprint. Chrome auto-updates do NOT kick;
-// switching browsers on the same session DOES kick (real token-replay signal).
+// Session presence check. The real gate is the device-limit + revocation set.
+//
+// We deliberately DO NOT kick on a User-Agent change by default. The coarse UA
+// fingerprint is unstable in practice (browser auto-updates, engine tweaks, OS
+// minor bumps), and legitimate viewers were being kicked mid-stream for a
+// marginal security gain. Enforcement now rests on:
+//   • device count per PIN (ask-before-kick),
+//   • per-browser deviceId (a different browser = a new device, so it hits the
+//     device-limit flow, not a silent kill), and
+//   • the short-TTL revocation set + heartbeat continuity.
+// Set STREAM_UA_BINDING=strict to re-enable hard UA kicks if you truly need it.
+const UA_STRICT = process.env.STREAM_UA_BINDING === 'strict';
+
 async function checkUaBinding(req, streamPayload) {
   const list = await registry.listSessions(streamPayload.pin);
   const sess = list.find((s) => s.sessionId === streamPayload.sid);
   if (!sess) return { ok: false, reason: 'session_gone' };
-  const ua = clientUA(req);
-  // Coarse browser+OS fingerprint (not full UA hash) — see session_registry.
-  const fp = registry.deviceFingerprint(ua);
-  if (fp !== sess.userAgentHash) {
-    await registry.kick(streamPayload.pin, streamPayload.sid, 'ua_change_detected');
-    pins.logRevocation({
-      tenantId: null, pin: streamPayload.pin, sessionId: streamPayload.sid,
-      deviceLabel: sess.deviceLabel, ip: clientIp(req),
-      reason: 'ua_change_detected', actor: 'server',
-    });
-    return { ok: false, reason: 'ua_change_detected' };
+  if (UA_STRICT) {
+    const fp = registry.deviceFingerprint(clientUA(req));
+    if (fp !== sess.userAgentHash) {
+      await registry.kick(streamPayload.pin, streamPayload.sid, 'ua_change_detected');
+      pins.logRevocation({
+        tenantId: null, pin: streamPayload.pin, sessionId: streamPayload.sid,
+        deviceLabel: sess.deviceLabel, ip: clientIp(req),
+        reason: 'ua_change_detected', actor: 'server',
+      });
+      return { ok: false, reason: 'ua_change_detected' };
+    }
   }
   return { ok: true, session: sess };
 }
@@ -204,7 +213,9 @@ router.post('/refresh-url', requireHttps, requireStreamSession, async (req, res,
   } catch (e) { next(e); }
 });
 
-router.get('/manifest', requireHttps, requireStreamSession, async (req, res, next) => {
+// Both paths serve the same rewritten HLS. The `.m3u8` alias lets a generic
+// player detect HLS from the URL (the ad-injection app.js keys off /\.m3u8/).
+router.get(['/manifest', '/manifest.m3u8'], requireHttps, requireStreamSession, async (req, res, next) => {
   try {
     const ua = await checkUaBinding(req, req.stream);
     if (!ua.ok) return next(new HttpError(403, 'session_terminated', ua.reason));

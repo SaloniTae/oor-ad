@@ -67,13 +67,19 @@ function attach(server, log) {
 
     // Per-channel streaming-security flag lives in the channel settings blob.
     // When set, the player must gate playback behind a PIN + device limit and
-    // load the signed manifest instead of the raw live_url.
+    // load the SIGNED manifest — so we withhold the raw live_url here. That
+    // way even a plain (non-secure) player link cannot bypass the PIN: with no
+    // live_url and no signed manifest, there is simply nothing to play.
     let requirePin = false;
     try { requirePin = !!JSON.parse(channel.settings || '{}').requirePin; } catch { requirePin = false; }
 
     safeSend(ws, {
       type: 'welcome',
-      channel: { id: channel.id, slug: channel.slug, name: channel.name, liveUrl: channel.live_url, requirePin },
+      channel: {
+        id: channel.id, slug: channel.slug, name: channel.name,
+        liveUrl: requirePin ? null : channel.live_url,
+        requirePin,
+      },
       viewerId: ws.viewerId,
       ts: Date.now(),
     });

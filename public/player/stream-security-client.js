@@ -110,10 +110,12 @@
       document.dispatchEvent(new CustomEvent('oor:session_terminated', { detail: { reason } }));
     }
 
-    /** URL the video/HLS player should load. Server rewrites the manifest. */
+    /** URL the video/HLS player should load. Server rewrites the manifest.
+     *  Note the `.m3u8` suffix: it lets a generic player detect HLS from the
+     *  URL alone (the ad-injection app.js keys off /\.m3u8/). */
     manifestUrl() {
       if (!this.streamToken) throw new Error('call authorize() first');
-      return this.apiBase + '/v1/stream/manifest?stoken=' + encodeURIComponent(this.streamToken);
+      return this.apiBase + '/v1/stream/manifest.m3u8?stoken=' + encodeURIComponent(this.streamToken);
     }
 
     /** For MP4 hot-swap flow. Call every refreshInSec seconds. */

@@ -450,7 +450,7 @@ async function openChannel(c, view) {
       h('button', { onclick: async () => {
         try {
           const r = await api('POST', `/v1/channels/${ch.id}/viewer-token`, {});
-          const url = `${location.origin}/player/?ws=${encodeURIComponent(r.ws_url)}`;
+          const url = playerUrl(r.ws_url, ch);
           await copy(url).catch(() => {});
           prompt('Secure player link (enforces PIN when enabled) — copied to clipboard:', url);
         } catch (e) { alert(e.message); }
@@ -486,7 +486,7 @@ async function openChannel(c, view) {
       h('div', { class: 'row', style: 'margin-top:14px' },
         h('button', { onclick: async () => {
           const r = await api('POST', `/v1/channels/${ch.id}/viewer-token`, {});
-          const url = `${location.origin}/player/?ws=${encodeURIComponent(r.ws_url)}`;
+          const url = playerUrl(r.ws_url, ch);
           prompt('Viewer URL (share or embed):', url);
         }}, 'Get viewer URL'),
         h('button', { onclick: () => openViewer(ch) }, 'Open player'),
@@ -525,9 +525,19 @@ async function previewAd(ad) {
   );
 }
 
+// Build the player URL. For channels that require a PIN we mark the link
+// `secure=1&ch=<slug>` so the security gate engages; open channels get the
+// plain link (identical to before). One helper, used by every link builder.
+function playerUrl(ws_url, channel) {
+  let url = `${location.origin}/player/?ws=${encodeURIComponent(ws_url)}`;
+  const requirePin = !!(channel && channel.settings && channel.settings.requirePin);
+  if (requirePin && channel.slug) url += `&secure=1&ch=${encodeURIComponent(channel.slug)}`;
+  return url;
+}
+
 async function openViewer(c) {
   const r = await api('POST', `/v1/channels/${c.id}/viewer-token`, {});
-  const url = `${location.origin}/player/?ws=${encodeURIComponent(r.ws_url)}`;
+  const url = playerUrl(r.ws_url, c);
   const embed = `<iframe src="${url}" style="width:100%;aspect-ratio:16/9;border:0"></iframe>`;
   modal(
     h('h2', {}, `Player for "${c.name || c.slug}"`),
