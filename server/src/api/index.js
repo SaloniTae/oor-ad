@@ -23,8 +23,8 @@ router.get('/ping', (req, res) => res.json({ ok: true, service: 'oor-ad api', ve
 // ---- section routers ------------------------------------------------------
 router.use('/admin/keys', require('./routes/keys'));       // Section 1
 router.use('/channels',   require('./routes/channels'));   // Section 2
-// Section 3-5 mounted here as they land:
-// router.use('/playback',  require('./routes/playback'));
+router.use('/playback',   require('./routes/playback'));   // Section 3
+// Section 4-5 mounted here as they land:
 // router.use('/ads',       require('./routes/ads'));
 // router.use('/telemetry', require('./routes/telemetry'));
 
