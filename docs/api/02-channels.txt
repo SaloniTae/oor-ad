@@ -1,0 +1,129 @@
+================================================================================
+OOR-AD API — SECTION 2: CHANNEL MANAGEMENT
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Auth:       x-api-key header (see 01-keys.txt for auth + error model)
+Scopes:     read -> channels:read | write -> channels:write (full-access '*' has both)
+Doc source: server/src/api/routes/channels.js
+================================================================================
+
+A channel is a named live source. The returned `stream_reference` is PORTABLE:
+a third party can point ANY player at `source_url`, or protect it with the
+signed pin-based playback flow (see 03-playback.txt).
+
+source_type values:  m3u8 | mp4 | mkv | youtube | direct_url
+status values:       active | disabled
+
+CHANNEL OBJECT:
+    {
+      "id": "53Bz4o3-3MdncTDx",
+      "name": "Sports HD",
+      "slug": "sports-hd-jpfh",
+      "source_type": "m3u8",
+      "source_url": "https://cdn.example.com/live.m3u8",
+      "status": "active",
+      "require_pin": true,
+      "stream_reference": {
+        "source_url": "https://cdn.example.com/live.m3u8",
+        "source_type": "m3u8",
+        "secured": true,
+        "playback_generate": "/api/v1/playback/generate"
+      },
+      "created_at": 1783801000000
+    }
+
+================================================================================
+POST /api/v1/channels
+--------------------------------------------------------------------------------
+Purpose:   Create a channel.
+Scope:     channels:write
+Body:
+    {
+      "name":        "Sports HD",          // required
+      "source_type": "m3u8",               // required, one of the 5 types
+      "source_url":  "https://.../live.m3u8", // required, valid URL
+      "slug":        "sports-hd",           // optional (auto-generated if omitted)
+      "require_pin": true                    // optional, gate playback behind a PIN
+    }
+
+Example:
+    curl -X POST https://host/api/v1/channels \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" \
+      -d '{"name":"Sports HD","source_type":"m3u8","source_url":"https://cdn/live.m3u8","require_pin":true}'
+
+Success (201): the CHANNEL OBJECT above (+ "request_id").
+
+Errors:
+    400 VALIDATION_ERROR  { ..., "field":"source_type" }   (bad/missing field)
+    409 SLUG_TAKEN        { ..., "field":"slug" }
+
+================================================================================
+GET /api/v1/channels?limit=20&offset=0&status=active
+--------------------------------------------------------------------------------
+Purpose:   List channels (paginated, optional status filter).
+Scope:     channels:read
+Query:     limit (1-100, default 20), offset (default 0), status (active|disabled)
+
+Example:
+    curl "https://host/api/v1/channels?limit=20&status=active" -H "x-api-key: adi_xxx"
+
+Success (200):
+    {
+      "items": [ { CHANNEL OBJECT }, ... ],
+      "pagination": { "total": 42, "limit": 20, "offset": 0, "has_more": true },
+      "request_id": "req_..."
+    }
+
+================================================================================
+GET /api/v1/channels/{id}
+--------------------------------------------------------------------------------
+Purpose:   Get one channel.
+Scope:     channels:read
+
+Example:
+    curl https://host/api/v1/channels/53Bz4o3-3MdncTDx -H "x-api-key: adi_xxx"
+
+Success (200): CHANNEL OBJECT (+ request_id)
+Error (404):   { "error_code":"CHANNEL_NOT_FOUND", "field":"id", "request_id":"..." }
+
+================================================================================
+PATCH /api/v1/channels/{id}
+--------------------------------------------------------------------------------
+Purpose:   Update name / source / pin requirement (any subset).
+Scope:     channels:write
+Body (at least one field):
+    { "name": "Sports 4K", "source_type": "m3u8",
+      "source_url": "https://.../new.m3u8", "require_pin": false }
+
+Example:
+    curl -X PATCH https://host/api/v1/channels/53Bz4o3-3MdncTDx \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" \
+      -d '{"name":"Sports 4K","source_url":"https://cdn/new.m3u8"}'
+
+Success (200): updated CHANNEL OBJECT
+Error (400):   VALIDATION_ERROR if body empty or a field is invalid
+
+================================================================================
+POST /api/v1/channels/{id}/disable
+POST /api/v1/channels/{id}/enable
+--------------------------------------------------------------------------------
+Purpose:   Soft disable / re-enable (keeps the channel, flips status).
+Scope:     channels:write
+
+Example:
+    curl -X POST https://host/api/v1/channels/53Bz4o3-3MdncTDx/disable -H "x-api-key: adi_xxx"
+
+Success (200): CHANNEL OBJECT with "status":"disabled" (or "active" for enable)
+
+================================================================================
+DELETE /api/v1/channels/{id}
+--------------------------------------------------------------------------------
+Purpose:   Permanently delete a channel.
+Scope:     channels:write
+
+Example:
+    curl -X DELETE https://host/api/v1/channels/53Bz4o3-3MdncTDx -H "x-api-key: adi_xxx"
+
+Success (200): { "id":"53Bz4o3-3MdncTDx", "deleted":true, "request_id":"req_..." }
+Error (404):   CHANNEL_NOT_FOUND
+================================================================================

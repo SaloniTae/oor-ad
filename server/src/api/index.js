@@ -22,8 +22,8 @@ router.get('/ping', (req, res) => res.json({ ok: true, service: 'oor-ad api', ve
 
 // ---- section routers ------------------------------------------------------
 router.use('/admin/keys', require('./routes/keys'));       // Section 1
-// Section 2-5 mounted here as they land:
-// router.use('/channels',  require('./routes/channels'));
+router.use('/channels',   require('./routes/channels'));   // Section 2
+// Section 3-5 mounted here as they land:
 // router.use('/playback',  require('./routes/playback'));
 // router.use('/ads',       require('./routes/ads'));
 // router.use('/telemetry', require('./routes/telemetry'));

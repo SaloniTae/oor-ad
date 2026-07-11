@@ -70,6 +70,8 @@ function validate(schema, source = 'body') {
 
 const getKeyByHash = db.prepare('SELECT * FROM api_keys WHERE key_hash = ?');
 const getTenant = db.prepare('SELECT * FROM tenants WHERE id = ?');
+const adminTenantStmt = db.prepare("SELECT * FROM tenants WHERE plan = 'admin' AND disabled = 0 ORDER BY created_at ASC LIMIT 1");
+function hashBuf(s) { return crypto.createHash('sha256').update(String(s)).digest(); }
 
 function extractKey(req) {
   // Primary: x-api-key. Also accept Authorization: Bearer adi_... for convenience.
@@ -87,6 +89,19 @@ function extractKey(req) {
 function requireApiKey(req, _res, next) {
   const raw = extractKey(req);
   if (!raw) return next(new ApiError(401, 'MISSING_KEY', 'API key required. Send it in the x-api-key header.', 'x-api-key'));
+
+  // Master key: a full-access, never-stored key that works on EVERY section
+  // (not just /admin/keys) so the admin can drive the whole platform over API.
+  if (cfg.adminApiKey && raw.length === cfg.adminApiKey.length &&
+      crypto.timingSafeEqual(hashBuf(raw), hashBuf(cfg.adminApiKey))) {
+    const t = adminTenantStmt.get();
+    if (!t) return next(new ApiError(500, 'NO_ADMIN_TENANT', 'No admin tenant is provisioned.'));
+    req.tenant = t;
+    req.apiKey = { id: 'master', tenant_id: t.id, rate_limit_rpm: null };
+    req.scopes = ['*'];
+    req.isMasterKey = true;
+    return next();
+  }
 
   const key = getKeyByHash.get(auth.sha256(raw));
   if (!key) return next(new ApiError(401, 'INVALID_KEY', 'API key is not recognised.'));
@@ -141,19 +156,8 @@ function requireAdmin(req, _res, next) {
 // NOTE: in this single-admin platform EVERY key belongs to the admin tenant, so
 // a tenant-plan check would let restricted partner keys manage keys. The real
 // gate is therefore: master key OR a key carrying the '*' (full-access) scope.
-const adminTenantStmt = db.prepare("SELECT * FROM tenants WHERE plan = 'admin' AND disabled = 0 ORDER BY created_at ASC LIMIT 1");
+// requireApiKey already recognises the master key and sets scopes=['*'].
 function requireAdminKey(req, res, next) {
-  const raw = extractKey(req);
-  if (!raw) return next(new ApiError(401, 'MISSING_KEY', 'Admin API key required in the x-api-key header.', 'x-api-key'));
-  // Master key path.
-  if (cfg.adminApiKey && crypto.timingSafeEqual(hashBuf(raw), hashBuf(cfg.adminApiKey))) {
-    const t = adminTenantStmt.get();
-    if (!t) return next(new ApiError(500, 'NO_ADMIN_TENANT', 'No admin tenant is provisioned.'));
-    req.tenant = t; req.apiKey = { id: 'master', tenant_id: t.id, rate_limit_rpm: null };
-    req.scopes = ['*']; req.isMasterKey = true;
-    return next();
-  }
-  // Otherwise: a valid key that ALSO carries full-access ('*') scope.
   return requireApiKey(req, res, (err) => {
     if (err) return next(err);
     if (!(req.scopes || []).includes('*')) {
@@ -162,7 +166,6 @@ function requireAdminKey(req, res, next) {
     return next();
   });
 }
-function hashBuf(s) { return crypto.createHash('sha256').update(String(s)).digest(); }
 
 // ==== Per-key rate limiting (Redis, cluster-safe) ==========================
 
