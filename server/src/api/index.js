@@ -25,8 +25,7 @@ router.use('/admin/keys', require('./routes/keys'));       // Section 1
 router.use('/channels',   require('./routes/channels'));   // Section 2
 router.use('/playback',   require('./routes/playback'));   // Section 3
 router.use('/ads',        require('./routes/ads'));         // Section 4
-// Section 5 mounted here as it lands:
-// router.use('/telemetry', require('./routes/telemetry'));
+router.use('/telemetry',  require('./routes/telemetry'));   // Section 5
 
 // ---- tail: 404 + error envelope ------------------------------------------
 router.use(mw.notFound);

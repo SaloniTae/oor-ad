@@ -1,0 +1,117 @@
+================================================================================
+OOR-AD API — SECTION 5: TELEMETRY
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Auth:       x-api-key header (see 01-keys.txt)
+Scope:      telemetry:read   ('*' also works)
+Doc source: server/src/api/routes/telemetry.js
+================================================================================
+
+Exposes everything the dashboard shows: concurrent viewers, session start/stop,
+ad impression/completion, error events, and device breakdown. Two shapes:
+  - REAL-TIME snapshot  -> GET /telemetry/realtime
+  - HISTORICAL query    -> GET /telemetry/events  and  GET /telemetry/summary
+
+Concurrent-viewer counts come from the cluster-safe presence layer (Redis), so
+they are correct across all workers.
+
+EVENT CATEGORIES (normalized from raw event types):
+  session_start   (viewer.connect)
+  session_stop    (viewer.disconnect)
+  ad_impression   (ad.impression)
+  ad_completion   (ad.complete)
+  error           (error:* — buffering, playback_failed, kicks, etc.)
+  other
+
+TIME RANGE (historical endpoints): ?from=<ms>&to=<ms>
+  Defaults: from = now-24h, to = now.
+
+================================================================================
+GET /api/v1/telemetry/realtime
+--------------------------------------------------------------------------------
+Purpose:   Live concurrent-viewer snapshot — one channel or all channels.
+Scope:     telemetry:read
+Query:     channel_id (optional). Omit for an all-channels rollup.
+
+Example (one channel):
+    curl "https://host/api/v1/telemetry/realtime?channel_id=s-kGoNY6ER9cVCiq" \
+      -H "x-api-key: adi_xxx"
+Success (200):
+    { "channel_id":"s-kGoNY6ER9cVCiq", "concurrent_viewers":1,
+      "ts":1783806600000, "request_id":"req_..." }
+
+Example (all channels):
+    curl "https://host/api/v1/telemetry/realtime" -H "x-api-key: adi_xxx"
+Success (200):
+    { "total_concurrent_viewers":42,
+      "channels": {
+        "s-kGoNY6ER9cVCiq": { "slug":"sports","name":"Sports","concurrent_viewers":40 },
+        "Wt9Qk0DELh-hZTCQ": { "slug":"news","name":"News","concurrent_viewers":2 }
+      },
+      "ts":1783806600000, "request_id":"req_..." }
+
+Error (404): CHANNEL_NOT_FOUND  { "field":"channel_id" }
+
+================================================================================
+GET /api/v1/telemetry/events
+--------------------------------------------------------------------------------
+Purpose:   Historical event log (filterable, paginated).
+Scope:     telemetry:read
+Query:
+    channel_id (optional)   from (ms)   to (ms)
+    category   (optional: session_start|session_stop|ad_impression|
+                          ad_completion|error|other)
+    limit (1..1000, default 200)   offset (default 0)
+
+Example:
+    curl "https://host/api/v1/telemetry/events?channel_id=s-kG...&category=error&from=1783700000000&limit=100" \
+      -H "x-api-key: adi_xxx"
+
+Success (200):
+    {
+      "items": [
+        { "id":9931, "channel_id":"s-kG...", "ad_id":null, "trigger_id":null,
+          "viewer_id":"eTgVgg-rtsY", "event_type":"viewer.connect",
+          "category":"session_start", "metadata":null, "created_at":1783806000000 }
+      ],
+      "time_range": { "from":1783700000000, "to":1783806600000 },
+      "pagination": { "limit":100, "offset":0, "returned":1 },
+      "request_id":"req_..."
+    }
+
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+GET /api/v1/telemetry/summary
+--------------------------------------------------------------------------------
+Purpose:   Aggregated counts by category + device breakdown for a time range.
+Scope:     telemetry:read
+Query:     channel_id (optional), from (ms), to (ms)
+
+Example:
+    curl "https://host/api/v1/telemetry/summary?channel_id=s-kG...&from=1783700000000" \
+      -H "x-api-key: adi_xxx"
+
+Success (200):
+    {
+      "time_range": { "from":1783700000000, "to":1783806600000 },
+      "concurrent_viewers_now": 40,
+      "events": { "session_start":120, "session_stop":118, "ad_impression":54,
+                  "ad_completion":50, "error":3, "other":0 },
+      "ad_breaks": 12,
+      "device_breakdown": [ { "label":"Chrome on Android", "c":22 },
+                            { "label":"Safari on iOS", "c":15 } ],
+      "request_id":"req_..."
+    }
+
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+NOTES
+--------------------------------------------------------------------------------
+- Real-time counts are self-healing: a crashed worker's viewers age out of the
+  presence window (~75s) instead of leaking.
+- For push-based error/impression telemetry, the player emits events over the
+  viewer WS ({type:"event",name:"error:...",...}) which are persisted and then
+  visible here within the historical endpoints.
+================================================================================

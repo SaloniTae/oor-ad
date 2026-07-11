@@ -80,9 +80,12 @@ function attach(server, log) {
     ws.channelId = channel.id;
     ws.viewerId  = p.vid;
     ws.isAlive   = true;
+    // Stable per-connection key for cluster-safe presence (see presence.js).
+    ws.presenceKey = `${p.vid}:${crypto.randomBytes(4).toString('hex')}`;
     ws.on('pong', () => { ws.isAlive = true; });
 
     join(channel.id, ws);
+    try { require('./presence').join(channel.id, ws.presenceKey).catch(() => {}); } catch {}
     insertEvent.run(channel.tenant_id, channel.id, null, null, ws.viewerId, 'viewer.connect', null, auth.now());
 
     // Per-channel streaming-security flag lives in the channel settings blob.
@@ -132,6 +135,7 @@ function attach(server, log) {
     ws.on('close', () => {
       clearInterval(tick);
       leave(channel.id, ws);
+      try { require('./presence').leave(channel.id, ws.presenceKey).catch(() => {}); } catch {}
       insertEvent.run(channel.tenant_id, channel.id, null, null, ws.viewerId, 'viewer.disconnect', null, auth.now());
     });
   });
@@ -140,6 +144,10 @@ function attach(server, log) {
     wss.clients.forEach((ws) => {
       if (!ws.isAlive) return ws.terminate();
       ws.isAlive = false;
+      // Refresh cluster-safe presence score so this viewer stays "fresh".
+      if (ws.channelId && ws.presenceKey) {
+        try { require('./presence').refresh(ws.channelId, ws.presenceKey).catch(() => {}); } catch {}
+      }
       try { ws.ping(); } catch {}
     });
   }, 30_000);
