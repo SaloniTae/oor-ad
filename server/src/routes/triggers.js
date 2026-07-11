@@ -113,8 +113,15 @@ r.post('/:id/trigger', validate(TriggerBody), async (req, res, next) => {
 
   insertTrigger.run(triggerId, req.tenant.id, channel.id, firstAdId, totalAdDuration, 'active', startAt, endAt, req.apiKey?.id || 'session', Date.now(), JSON.stringify(resolvedPod));
   ws.setState(channel.id, { mode: 'pod', triggerId, pod: resolvedPod, bumper: BUMPER_DURATION_SEC, startAt });
-  
+
   const delivered = ws.broadcast(channel.id, cmd);
+  // Cluster fan-out: also reach viewers connected to OTHER workers, and keep
+  // the Redis ad-state in sync so the API /ads/state endpoint is correct.
+  try {
+    const adState = require('../ad_state');
+    adState.setState(channel.id, { mode: 'pod', triggerId, pod: resolvedPod, bumper: BUMPER_DURATION_SEC, startAt, endAt }).catch(() => {});
+    adState.publishCommand(channel.id, { state: null, wire: cmd, originWorker: process.pid }).catch(() => {});
+  } catch {}
 
   const t = setTimeout(() => {
     const checkState = activeTrigger.get(channel.id);

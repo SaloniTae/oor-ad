@@ -50,6 +50,23 @@ function attach(server, log) {
   // http server race on 'upgrade' and destroy each other's sockets.
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4 * 1024 });
 
+  // Cluster-wide ad fan-out: a trigger fired on ANY worker (or via the API)
+  // publishes to Redis ad:commands; every worker rebroadcasts to its local
+  // viewers. This is what makes ad breaks sync across concurrent users on
+  // different workers. Best-effort: if Redis is unavailable, local broadcast
+  // (same-worker) still works via the direct ws.broadcast path.
+  try {
+    const { subscribe, CHANNELS } = require('./redis');
+    subscribe(CHANNELS.AD_COMMANDS, (msg) => {
+      if (!msg || !msg.channelId || !msg.cmd) return;
+      if (msg.cmd.state) stateByChannel.set(msg.channelId, msg.cmd.state);
+      // Avoid double-delivery: if this worker already broadcast locally (legacy
+      // trigger route sets originWorker to its pid), skip the rebroadcast here.
+      if (msg.cmd.originWorker && msg.cmd.originWorker === process.pid) return;
+      broadcast(msg.channelId, msg.cmd.wire || msg.cmd);
+    }).catch((e) => log?.warn?.({ err: e }, 'ad:commands subscribe failed'));
+  } catch (e) { log?.warn?.({ err: e }, 'ad:commands wiring failed'); }
+
   wss.on('connection', (ws, req) => {
     const q = url.parse(req.url, true).query;
     const token = q.token;

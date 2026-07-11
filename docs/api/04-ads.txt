@@ -1,0 +1,137 @@
+================================================================================
+OOR-AD API — SECTION 4: AD ORCHESTRATION
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Auth:       x-api-key header (see 01-keys.txt)
+Scopes:     ads:read, ads:write   ('*' = both)
+Doc source: server/src/api/routes/ads.js
+================================================================================
+
+Register ad creatives, trigger/cancel ad breaks on a live channel, and read
+real-time ad-break state so a third-party UI can render its OWN overlays.
+
+Ad-break state is Redis-backed and fanned out over the ad:commands channel, so
+it stays consistent across concurrent viewers on any cluster worker.
+
+STATE IS AVAILABLE TWO WAYS:
+  - POLL:  GET /api/v1/ads/state?channel_id=...      (this file)
+  - PUSH:  connect a viewer WS  wss://host/ws?channel=<slug>&token=<viewer jwt>
+           -> receives {type:"command",action:"play_pod"|"resume_live",...}
+           Also webhooks: ad.break_started / ad.break_canceled / ad.completed.
+
+ad types:   video | hls | image
+placements: pre-roll | mid-roll | bumper | post-roll
+
+================================================================================
+POST /api/v1/ads   (register a creative)
+--------------------------------------------------------------------------------
+Scope: ads:write
+Body:
+    { "name":"Preroll Spot", "type":"video",
+      "source_url":"https://cdn/ad.mp4", "duration_seconds":15,
+      "placement":"pre-roll", "click_url":"https://advertiser.com" }
+
+Example:
+    curl -X POST https://host/api/v1/ads -H "x-api-key: adi_xxx" \
+      -H "Content-Type: application/json" \
+      -d '{"name":"Preroll","type":"video","source_url":"https://cdn/ad.mp4","duration_seconds":15}'
+
+Success (201):
+    { "id":"5QUaZH-eW7jpCb7D", "name":"Preroll", "type":"video",
+      "source":"https://cdn/ad.mp4", "duration_seconds":15,
+      "metadata":{"placement":"pre-roll"}, "created_at":1783805000000,
+      "request_id":"req_..." }
+
+Error (400): VALIDATION_ERROR (e.g. field="type" for a bad ad type)
+
+================================================================================
+GET /api/v1/ads   (list creatives)
+--------------------------------------------------------------------------------
+Scope: ads:read
+Example:  curl https://host/api/v1/ads -H "x-api-key: adi_xxx"
+Success (200): { "items":[ {ad}, ... ], "request_id":"req_..." }
+
+================================================================================
+POST /api/v1/ads/trigger   (start an ad break)
+--------------------------------------------------------------------------------
+Scope: ads:write
+Body:
+    { "channel_id":"W8FmpPpGC3zQjpiy",
+      "pod":[ {"ad_id":"5QUaZH-eW7jpCb7D"},
+              {"ad_id":"skiopFaq2qc7Wm8-","duration_seconds":10} ],
+      "lead_ms":500 }
+    - pod: 1..10 ads played back-to-back behind one bumper.
+    - duration_seconds per item optional (defaults to the creative's duration).
+    - lead_ms optional (0..5000) scheduling lead, default 500.
+
+Example:
+    curl -X POST https://host/api/v1/ads/trigger -H "x-api-key: adi_xxx" \
+      -H "Content-Type: application/json" \
+      -d '{"channel_id":"W8FmpPpGC3zQjpiy","pod":[{"ad_id":"5QUaZH-eW7jpCb7D"}]}'
+
+Success (201):
+    { "trigger_id":"Jsud4i_I...", "channel_id":"W8FmpPpGC3zQjpiy",
+      "pod_size":1, "bumper_seconds":7, "total_break_seconds":12,
+      "starts_at":1783805000500, "ends_at":1783805012500, "request_id":"req_..." }
+
+Errors:
+    404 CHANNEL_NOT_FOUND  { "field":"channel_id" }
+    404 AD_NOT_FOUND       { "field":"pod" }
+
+================================================================================
+GET /api/v1/ads/state?channel_id={id}   (real-time break state, POLLABLE)
+--------------------------------------------------------------------------------
+Scope: ads:read
+
+Example:
+    curl "https://host/api/v1/ads/state?channel_id=W8FmpPpGC3zQjpiy" -H "x-api-key: adi_xxx"
+
+Success (200) — LIVE (no break):
+    { "channel_id":"...", "state":"live", "is_ad_break":false, "request_id":"..." }
+
+Success (200) — BUMPER ("we'll be right back"):
+    { "channel_id":"...", "state":"bumper", "is_ad_break":true,
+      "trigger_id":"...", "bumper":{"remaining_seconds":6},
+      "pod":{"total":2,"index":0}, "break_remaining_seconds":15,
+      "request_id":"..." }
+
+Success (200) — AD PLAYING (index is 1-based -> "ad 1 of 2"):
+    { "channel_id":"...", "state":"ad", "is_ad_break":true, "trigger_id":"...",
+      "current_ad":{ "ad_id":"5QUaZH...", "type":"video",
+                     "duration_seconds":5, "elapsed_seconds":1,
+                     "remaining_seconds":4 },
+      "pod":{"total":2,"index":1}, "break_remaining_seconds":8,
+      "request_id":"..." }
+
+Error (400): VALIDATION_ERROR { "field":"channel_id" }  (missing param)
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+POST /api/v1/ads/cancel   (end an in-progress break immediately)
+--------------------------------------------------------------------------------
+Scope: ads:write
+Body:  { "channel_id":"W8FmpPpGC3zQjpiy" }
+
+Example:
+    curl -X POST https://host/api/v1/ads/cancel -H "x-api-key: adi_xxx" \
+      -H "Content-Type: application/json" -d '{"channel_id":"W8FmpPpGC3zQjpiy"}'
+
+Success (200):
+    { "canceled":true, "trigger_id":"Jsud4i_I...", "channel_id":"...",
+      "request_id":"..." }
+    (canceled:false if nothing was active — still returns 200 and resumes live.)
+
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+PUSH INTEGRATION NOTES
+--------------------------------------------------------------------------------
+- Viewer WS: wss://host/ws?channel=<slug>&token=<viewer jwt>
+    play_pod   -> render bumper then the pod (poll /ads/state for progress, or
+                  derive locally from startAt + pod durations).
+    resume_live-> break ended / canceled.
+- Webhooks (configure a webhook_url on the account): ad.break_started,
+  ad.break_canceled, ad.completed  — each { channel_id, trigger_id, ... }.
+- Fan-out is cluster-wide (Redis ad:commands), so every concurrent viewer on
+  any worker stays in sync.
+================================================================================
