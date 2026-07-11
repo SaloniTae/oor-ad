@@ -105,6 +105,10 @@ app.get('/v1/channels/by-slug/:slug/live-config', (req, res, next) => {
 app.use('/v1/stream',          streamRoutes);
 app.use('/v1/admin/streaming', streamingAdmin);
 
+// API-first surface (x-api-key). Self-contained: own auth, error envelope, and
+// 404 handling live inside this router, so it never touches the legacy flow.
+app.use('/api/v1', require('./api'));
+
 app.use(errorHandler);
 
 // ---- HTTP + WS --------------------------------------------------------------
