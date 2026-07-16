@@ -25,7 +25,15 @@ async function setState(channelId, state) {
     await client.del(kState(channelId));
     return;
   }
-  const ttlSec = Math.max(10, Math.ceil(((state.endAt || Date.now()) - Date.now()) / 1000) + 15);
+  let ttlSec;
+  if (state.noAutoResume || !state.endAt) {
+    // Full-length ad: the end time is unknown (there is no server timer). Keep
+    // the state alive for a long window; it is cleared explicitly by an
+    // ad.complete / error client event, or by an explicit cancel.
+    ttlSec = 6 * 3600;
+  } else {
+    ttlSec = Math.max(10, Math.ceil(((state.endAt || Date.now()) - Date.now()) / 1000) + 15);
+  }
   await client.set(kState(channelId), JSON.stringify(state), 'EX', ttlSec);
 }
 
@@ -35,7 +43,12 @@ async function getRawState(channelId) {
   if (!raw) return { mode: 'live' };
   try {
     const s = JSON.parse(raw);
-    if (s.endAt && Date.now() > s.endAt) { await client.del(kState(channelId)); return { mode: 'live' }; }
+    // Full-length breaks have no server-side end; only an explicit ad.complete /
+    // error / cancel clears them. Never time-expire those here.
+    if (!s.noAutoResume && s.endAt && Date.now() > s.endAt) {
+      await client.del(kState(channelId));
+      return { mode: 'live' };
+    }
     return s;
   } catch { return { mode: 'live' }; }
 }
@@ -54,16 +67,22 @@ async function getBreakState(channelId) {
   const elapsedSec = Math.max(0, (now - s.startAt) / 1000);
   const totalAdSec = s.pod.reduce((a, b) => a + (b.duration || 0), 0);
   const totalSec = bumperSec + totalAdSec;
-  const remainingSec = Math.max(0, totalSec - elapsedSec);
+  // Full-length breaks have no known end -> remaining is unknown (null).
+  // A full-length break resumes ONLY when a viewer sends ad.complete (which
+  // the trigger route turns into a resume_live + state clear), never on a timer.
+  const noAutoResume = !!s.noAutoResume;
+  const remainingSec = noAutoResume ? null : Math.max(0, totalSec - elapsedSec);
+  const breakRemaining = remainingSec === null ? null : Math.ceil(remainingSec);
 
   // Bumper phase ("we'll be right back").
   if (elapsedSec < bumperSec) {
     return {
       channel_id: channelId, state: 'bumper', is_ad_break: true,
       trigger_id: s.triggerId,
+      full_length: noAutoResume,
       bumper: { remaining_seconds: Math.ceil(bumperSec - elapsedSec) },
       pod: { total: s.pod.length, index: 0 },
-      break_remaining_seconds: Math.ceil(remainingSec),
+      break_remaining_seconds: breakRemaining,
     };
   }
   // Find the currently-playing ad within the pod.
@@ -71,17 +90,25 @@ async function getBreakState(channelId) {
   for (let i = 0; i < s.pod.length; i++) {
     const ad = s.pod[i];
     const start = acc, end = acc + (ad.duration || 0);
-    if (elapsedSec >= start && elapsedSec < end) {
+    const isLast = i === s.pod.length - 1;
+    // For a full-length ad, its nominal duration is only a hint: once we reach
+    // it we stay "playing" with unknown remaining until ad.complete arrives.
+    const inThisAd = (elapsedSec >= start && elapsedSec < end) ||
+                     (ad.full_length && isLast && elapsedSec >= start);
+    if (inThisAd) {
+      const adRemaining = ad.full_length ? null : Math.ceil(end - elapsedSec);
       return {
         channel_id: channelId, state: 'ad', is_ad_break: true,
         trigger_id: s.triggerId,
+        full_length: noAutoResume,
         current_ad: {
           ad_id: ad.adId, type: ad.adType, duration_seconds: ad.duration,
+          full_length: !!ad.full_length,
           elapsed_seconds: Math.floor(elapsedSec - start),
-          remaining_seconds: Math.ceil(end - elapsedSec),
+          remaining_seconds: adRemaining,
         },
         pod: { total: s.pod.length, index: i + 1 },  // human 1-based ("ad 2 of 4")
-        break_remaining_seconds: Math.ceil(remainingSec),
+        break_remaining_seconds: breakRemaining,
       };
     }
     acc = end;

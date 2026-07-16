@@ -106,6 +106,16 @@ try {
   // Column already exists, safe to ignore
 }
 
+// --- AUTOMATIC MIGRATION: full-length ads --------------------------------
+// full_length = 1 means the ad plays to its natural end. The server must NOT
+// auto-schedule resume_live on a timer for a break containing such an ad; the
+// live stream resumes only when a viewer client emits the `ad.complete` event.
+try {
+  db.exec(`ALTER TABLE ads ADD COLUMN full_length INTEGER DEFAULT 0`);
+} catch (e) {
+  // Column already exists, safe to ignore
+}
+
 // --- AUTOMATIC MIGRATION: API-first key lifecycle (Section 1) ---------------
 // Idempotent ALTERs (same pattern as pod_data above). Adds the columns the
 // key lifecycle needs beyond the original api_keys shape:

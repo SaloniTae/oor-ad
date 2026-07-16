@@ -35,6 +35,7 @@ function channelOwned(id, tenantId) {
 function pubAd(a) {
   return { id: a.id, name: a.name, type: a.type, source: a.source,
     duration_seconds: a.duration_seconds, metadata: safeJson(a.metadata),
+    full_length: !!a.full_length,
     created_at: a.created_at };
 }
 function safeJson(s) { try { return JSON.parse(s || '{}'); } catch { return {}; } }
@@ -47,15 +48,18 @@ const registerSchema = z.object({
   duration_seconds: z.number().int().min(1).max(600),
   placement: z.enum(PLACEMENTS).optional(),
   click_url: z.string().url().optional(),
+  // When true, the server does NOT auto-resume live on a timer for a pod
+  // containing this ad — it waits for the client's ad.complete event instead.
+  full_length: z.boolean().optional(),
 });
 router.post('/', requireScope('ads:write'), validate(registerSchema), (req, res) => {
   const id = auth.id();
   const meta = {};
   if (req.body.placement) meta.placement = req.body.placement;
   if (req.body.click_url) meta.click_url = req.body.click_url;
-  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, created_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(id, req.tenant.id, req.body.name, req.body.type, req.body.source_url, 0, req.body.duration_seconds, JSON.stringify(meta), auth.now());
+  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, full_length, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.tenant.id, req.body.name, req.body.type, req.body.source_url, 0, req.body.duration_seconds, JSON.stringify(meta), req.body.full_length ? 1 : 0, auth.now());
   auth.audit({ tenantId: req.tenant.id, actor: 'api', action: 'ad.register', resource: id, ip: clientIp(req) });
   res.status(201).json({ ...pubAd(getAd.get(id)), request_id: req.request_id });
 });
@@ -87,24 +91,34 @@ router.post('/trigger', requireScope('ads:write'), validate(triggerSchema), asyn
     // Resolve pod ads (ownership-checked).
     const resolved = [];
     let totalAdSec = 0;
+    let hasFullLength = false;
     for (const item of req.body.pod) {
       const ad = getAd.get(item.ad_id);
       if (!ad || ad.tenant_id !== req.tenant.id) {
         return next(new ApiError(404, 'AD_NOT_FOUND', `Ad ${item.ad_id} not found.`, 'pod'));
       }
+      const fullLength = !!ad.full_length;
+      if (fullLength) hasFullLength = true;
       const duration = item.duration_seconds || ad.duration_seconds;
-      resolved.push({ adId: ad.id, adType: ad.type, adUrl: ad.source, duration, metadata: safeJson(ad.metadata) });
+      resolved.push({
+        adId: ad.id, adType: ad.type, adUrl: ad.source, duration,
+        full_length: fullLength,
+        metadata: safeJson(ad.metadata),
+      });
       totalAdSec += duration;
     }
 
     const bumper = adState.BUMPER_DURATION_SEC;
     const lead = req.body.lead_ms ?? 500;
     const startAt = Date.now() + lead;
+    // Full-length breaks have no deterministic end — the client resumes only when
+    // it emits ad.complete. We still record a nominal endAt for reporting, but the
+    // state carries noAutoResume so nothing (timer OR Redis TTL) ends it early.
     const endAt = startAt + (totalAdSec + bumper) * 1000;
     const triggerId = auth.id();
 
-    const state = { mode: 'pod', triggerId, pod: resolved, bumper, startAt, endAt };
-    const wire = { type: 'command', action: 'play_pod', triggerId, pod: resolved, bumper, startAt, ts: Date.now() };
+    const state = { mode: 'pod', triggerId, pod: resolved, bumper, startAt, endAt, noAutoResume: hasFullLength };
+    const wire = { type: 'command', action: 'play_pod', triggerId, pod: resolved, bumper, startAt, noAutoResume: hasFullLength, ts: Date.now() };
 
     insertTrigger.run(triggerId, req.tenant.id, channel.id, resolved[0].adId, totalAdSec, 'active', startAt, endAt, 'api', Date.now(), JSON.stringify(resolved));
     await adState.setState(channel.id, state);
@@ -112,18 +126,20 @@ router.post('/trigger', requireScope('ads:write'), validate(triggerSchema), asyn
     // late state reads on other workers are consistent.
     await adState.publishCommand(channel.id, { state, wire });
 
-    hooks.fire(req.tenant, 'ad.break_started', { channel_id: channel.id, trigger_id: triggerId, pod_size: resolved.length, total_seconds: totalAdSec + bumper });
+    hooks.fire(req.tenant, 'ad.break_started', { channel_id: channel.id, trigger_id: triggerId, pod_size: resolved.length, total_seconds: totalAdSec + bumper, full_length: hasFullLength });
     auth.audit({ tenantId: req.tenant.id, actor: 'api', action: 'ad.trigger', resource: triggerId,
-      metadata: { channel: channel.id, pod: resolved.length }, ip: clientIp(req) });
+      metadata: { channel: channel.id, pod: resolved.length, full_length: hasFullLength }, ip: clientIp(req) });
 
     res.status(201).json({
       trigger_id: triggerId,
       channel_id: channel.id,
       pod_size: resolved.length,
       bumper_seconds: bumper,
-      total_break_seconds: totalAdSec + bumper,
+      full_length: hasFullLength,
+      // null total when full-length: the break has no server-known duration.
+      total_break_seconds: hasFullLength ? null : totalAdSec + bumper,
       starts_at: startAt,
-      ends_at: endAt,
+      ends_at: hasFullLength ? null : endAt,
       request_id: req.request_id,
     });
   } catch (e) { next(e); }
