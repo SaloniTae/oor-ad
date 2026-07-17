@@ -116,6 +116,70 @@ Example:
 Success (200): CHANNEL OBJECT with "status":"disabled" (or "active" for enable)
 
 ================================================================================
+GET /api/v1/channels/{id}/state   (live broadcast state + concurrent viewers)
+--------------------------------------------------------------------------------
+Purpose:   Render the channel's "● BROADCAST LIVE / ● COMMERCIAL BREAK" widget.
+Scope:     channels:read
+Combines the cluster-safe concurrent viewer count with the current ad-break
+state (identical shape to GET /ads/state — live | bumper | ad + pod progress).
+
+Example:
+    curl https://host/api/v1/channels/53Bz4o3-3MdncTDx/state -H "x-api-key: adi_xxx"
+
+Success (200) — LIVE:
+    { "channel_id":"...", "concurrent_viewers":128, "state":"live",
+      "is_ad_break":false, "request_id":"..." }
+Success (200) — DURING A BREAK: same, plus the bumper/current_ad/pod fields
+    documented in 04-ads.txt (GET /ads/state).
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+GET /api/v1/channels/{id}/triggers?limit=50&offset=0   (ad-break history)
+--------------------------------------------------------------------------------
+Purpose:   The "Recent triggers" table (when / duration / status).
+Scope:     channels:read
+Query:     limit (1-200, default 50), offset (default 0)
+
+Example:
+    curl "https://host/api/v1/channels/53Bz4o3-3MdncTDx/triggers?limit=50" -H "x-api-key: adi_xxx"
+
+Success (200):
+    { "items":[ { "id":"...", "ad_id":"...", "status":"completed",
+                  "duration_seconds":12, "start_at":..., "end_at":...,
+                  "triggered_by":"api", "pod":[...], "is_error":false,
+                  "created_at":... }, ... ],
+      "pagination":{ "limit":50, "offset":0, "returned":3 }, "request_id":"..." }
+    - is_error=true and status="error:*" when a viewer reported a playback failure.
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+POST /api/v1/channels/{id}/viewer-token   (issue a viewer token + player links)
+--------------------------------------------------------------------------------
+Purpose:   "Get viewer URL" / "Open player" / "Copy embed code" — everything a
+           third party needs to drop ONE viewer onto the channel.
+Scope:     playback:write
+Body (all optional):
+    { "viewer_id":"seat-42", "ttl_seconds":3600 }
+    - viewer_id  stable id for this seat (auto-generated if omitted)
+    - ttl_seconds 60..86400, default 3600
+
+Example:
+    curl -X POST https://host/api/v1/channels/53Bz4o3-3MdncTDx/viewer-token \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" -d '{}'
+
+Success (200):
+    { "channel_id":"...", "viewer_id":"c0qgyrwCc94",
+      "token":"eyJ...", "expires_in":3600,
+      "ws_url":"wss://host/ws?channel=<slug>&token=<jwt>",
+      "player_url":"https://host/player/?ws=...(&secure=1&ch=<slug> if PIN-gated)",
+      "embed_code":"<iframe src=... allowfullscreen></iframe>",
+      "secured":false, "request_id":"..." }
+    - secured=true when the channel requires a PIN; then player_url carries
+      secure=1 so the PIN gate engages (mint the PIN via /playback/generate or
+      /pins — see 03-playback.txt / 06-pins.txt).
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
 DELETE /api/v1/channels/{id}
 --------------------------------------------------------------------------------
 Purpose:   Permanently delete a channel.

@@ -39,13 +39,25 @@ SECTION FILES
     01-keys.txt        Admin / API-key management (create, revoke, pause,
                        rotate, list, usage). ADMIN key required.
     02-channels.txt    Channel CRUD (m3u8|mp4|mkv|youtube|direct_url), portable
-                       stream reference.
+                       stream reference, PLUS channel-detail sub-resources:
+                       live state, viewer count, recent triggers, viewer-token,
+                       embed snippet.
     03-playback.txt    Signed pin-based playback URLs, payload on/off toggle,
                        active sessions, revoke/kick.
-    04-ads.txt         Register creatives, trigger/cancel ad breaks, real-time
-                       ad-break state (bumper / current ad / pod progress).
+    04-ads.txt         Register creatives, ad library CRUD (get/update/delete),
+                       file upload, signed/preview URL, trigger/cancel ad breaks,
+                       real-time ad-break state (bumper / current ad / pod
+                       progress), full_length ads.
     05-telemetry.txt   Concurrent viewers, session/ad/error events, device
                        breakdown. Real-time snapshot + historical query.
+    06-pins.txt        PIN lifecycle (create/list/delete), per-PIN device limit,
+                       per-PIN sessions + kick, revocation log, per-channel
+                       origin config (bunny|nginx|direct), edge-config snippets.
+    07-overview-stats.txt  Dashboard overview counters (channels, ads, live
+                       viewers, 24h triggers/impressions, top ads).
+
+    Every website screen now has an API equivalent — a third party can rebuild
+    the entire dashboard + player from these endpoints alone.
 
 PUSH VS POLL
     - POLL: /ads/state, /telemetry/realtime, /playback/sessions.
@@ -66,4 +78,31 @@ QUICK START (typical third-party flow)
                     -> streamToken -> load /v1/stream/manifest?stoken=...
     5. POST /ads/trigger                             -> start an ad break
     6. GET  /ads/state / /telemetry/realtime         -> render your own overlays
+
+REBUILD-THE-WEBSITE MAP (every UI screen -> API)
+    Overview page       GET  /overview
+    Channels list       GET  /channels                 (paginated)
+    + New channel       POST /channels
+    Channel detail:
+      · header/info     GET  /channels/{id}            (name, slug, source_url)
+      · live telemetry  GET  /channels/{id}/state      (mode + viewers, poll 1s)
+      · recent triggers GET  /channels/{id}/triggers
+      · edit / delete   PATCH / DELETE /channels/{id}
+      · get viewer URL  POST /channels/{id}/viewer-token   (+ /embed snippet)
+      · security card   POST /playback/payload  (+ /pins*, see below)
+    Ad Library:
+      · list            GET  /ads
+      · upload file     POST /ads/upload   (multipart "file")
+      · add by URL      POST /ads
+      · preview         GET  /ads/{id}/signed-url
+      · edit / delete   PATCH / DELETE /ads/{id}
+    Ad Sequencer/pod    POST /ads/trigger  ·  cancel: POST /ads/cancel
+    Events page         GET  /telemetry/events
+    Stream Security:
+      · PINs+devices    /pins, POST /pins, PATCH /pins/{pin}/device-limit
+      · active sessions GET  /pins/{pin}/sessions  ·  kick: POST .../kick
+      · revocation log  GET  /security/revocations
+      · origins         GET/PUT /security/channels/{id}/origin
+      · edge config     GET  /security/edge-config
+    API keys screen     /admin/keys*  (see 01-keys.txt)
 ================================================================================

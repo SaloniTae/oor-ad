@@ -45,11 +45,84 @@ Success (201):
 Error (400): VALIDATION_ERROR (e.g. field="type" for a bad ad type)
 
 ================================================================================
+POST /api/v1/ads/upload   (upload a creative FILE -> Cloudflare R2)
+--------------------------------------------------------------------------------
+Scope: ads:write
+Content-Type: multipart/form-data     (NOT json)
+Fields:
+    file              (required)  the media file
+    name              (optional)  defaults to the original filename
+    duration_seconds  (optional)  1..600, default 15
+    full_length       (optional)  "1"/"true"/"on"/"yes" -> wait for ad.complete
+    click_url         (optional)  stored in metadata
+    alt_text          (optional)  stored in metadata (images)
+Allowed types: mp4, webm, mov, mkv, m3u8, png, jpg, webp, gif, heic, avif, bmp.
+
+Example:
+    curl -X POST https://host/api/v1/ads/upload -H "x-api-key: adi_xxx" \
+      -F file=@promo.mp4 -F name="Promo" -F duration_seconds=20
+
+Success (201): {ad}   (type auto-detected: video|hls|image; source = R2 key)
+Errors:
+    400 NO_FILE          no multipart "file" field
+    400 BAD_MIME         unsupported type
+    413 FILE_TOO_LARGE   exceeds the configured MB limit
+    400 UPLOAD_FAILED    generic upload error
+
+================================================================================
 GET /api/v1/ads   (list creatives)
 --------------------------------------------------------------------------------
 Scope: ads:read
 Example:  curl https://host/api/v1/ads -H "x-api-key: adi_xxx"
 Success (200): { "items":[ {ad}, ... ], "request_id":"req_..." }
+
+================================================================================
+GET /api/v1/ads/{id}   (fetch one creative)
+--------------------------------------------------------------------------------
+Scope: ads:read
+Example:  curl https://host/api/v1/ads/5QUaZH-eW7jpCb7D -H "x-api-key: adi_xxx"
+Success (200): {ad}
+Error (404): AD_NOT_FOUND
+
+================================================================================
+GET /api/v1/ads/{id}/signed-url   (resolve a playable / preview URL)
+--------------------------------------------------------------------------------
+Scope: ads:read
+Returns a directly playable URL: for uploaded assets a 12h presigned R2 URL
+(or the R2_PUBLIC_URL CDN path when configured); for URL-registered ads the
+stored source is passed through unchanged. Use it for the Ad Library preview.
+
+Example:
+    curl https://host/api/v1/ads/5QUaZH-eW7jpCb7D/signed-url -H "x-api-key: adi_xxx"
+Success (200): { "url":"https://.../ad.mp4?...", "type":"video", "request_id":"..." }
+Error (404): AD_NOT_FOUND
+
+================================================================================
+PATCH /api/v1/ads/{id}   (edit a creative)
+--------------------------------------------------------------------------------
+Scope: ads:write
+Body (any subset; at least one field):
+    { "name":"Renamed", "duration_seconds":30, "full_length":true,
+      "metadata":{"click_url":"https://advertiser.com"},
+      "source_url":"https://cdn/new.mp4" }
+    - source_url is IGNORED for uploaded assets (source is the R2 key).
+    - metadata REPLACES the stored metadata object.
+
+Example:
+    curl -X PATCH https://host/api/v1/ads/5QUaZH-eW7jpCb7D -H "x-api-key: adi_xxx" \
+      -H "Content-Type: application/json" -d '{"name":"Renamed","duration_seconds":30}'
+Success (200): {ad}   (updated)
+Errors: 404 AD_NOT_FOUND · 400 VALIDATION_ERROR (empty body)
+
+================================================================================
+DELETE /api/v1/ads/{id}   (delete a creative)
+--------------------------------------------------------------------------------
+Scope: ads:write
+Removes the DB row and, for uploaded assets, best-effort deletes the R2 object.
+Example:
+    curl -X DELETE https://host/api/v1/ads/5QUaZH-eW7jpCb7D -H "x-api-key: adi_xxx"
+Success (200): { "id":"5QUaZH-eW7jpCb7D", "deleted":true, "request_id":"..." }
+Error (404): AD_NOT_FOUND
 
 ================================================================================
 POST /api/v1/ads/trigger   (start an ad break)

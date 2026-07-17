@@ -13,7 +13,10 @@
 const express = require('express');
 const mw = require('../middleware');
 const db = require('../../db');
+const cfg = require('../../config');
 const auth = require('../../auth');
+const presence = require('../../presence');
+const adState = require('../../ad_state');
 const { ApiError, z, validate, requireApiKey, requireScope, rateLimit, logUsage, clientIp } = mw;
 
 const router = express.Router();
@@ -136,6 +139,83 @@ function setStatus(status) {
 }
 router.post('/:id/disable', requireScope('channels:write'), setStatus('disabled'));
 router.post('/:id/enable', requireScope('channels:write'), setStatus('active'));
+
+// ---- live broadcast state + concurrent viewers ----------------------------
+// Mirrors the website channel page's "Live Telemetry Engine" panel. Returns the
+// current ad-break state (live | bumper | ad, with pod progress) plus the
+// cluster-safe concurrent viewer count so a third-party UI can render the exact
+// same "● BROADCAST LIVE / ● COMMERCIAL BREAK" widget.
+router.get('/:id/state', requireScope('channels:read'), async (req, res, next) => {
+  try {
+    const row = getOwned(req.params.id, req.tenant.id);
+    if (!row) return next(new ApiError(404, 'CHANNEL_NOT_FOUND', 'No such channel.', 'id'));
+    const [breakState, viewers] = await Promise.all([
+      adState.getBreakState(row.id),
+      presence.countChannel(row.id),
+    ]);
+    res.json({ channel_id: row.id, concurrent_viewers: viewers, ...breakState, request_id: req.request_id });
+  } catch (e) { next(e); }
+});
+
+// ---- recent triggers (ad-break history) -----------------------------------
+// Mirrors the "Recent triggers" table (when / total time / status). Status
+// carries the error:* value when a viewer reported a playback failure.
+router.get('/:id/triggers', requireScope('channels:read'), (req, res, next) => {
+  const row = getOwned(req.params.id, req.tenant.id);
+  if (!row) return next(new ApiError(404, 'CHANNEL_NOT_FOUND', 'No such channel.', 'id'));
+  const limit = Math.min(200, Math.max(1, Number(req.query.limit) || 50));
+  const offset = Math.max(0, Number(req.query.offset) || 0);
+  const rows = db.prepare('SELECT * FROM triggers WHERE channel_id = ? ORDER BY start_at DESC LIMIT ? OFFSET ?')
+    .all(row.id, limit, offset);
+  const items = rows.map((t) => ({
+    id: t.id,
+    ad_id: t.ad_id,
+    status: t.status,
+    duration_seconds: t.duration_seconds,
+    start_at: t.start_at,
+    end_at: t.end_at,
+    triggered_by: t.triggered_by,
+    pod: safePod(t.pod_data),
+    is_error: /^error:/.test(t.status || ''),
+    created_at: t.created_at,
+  }));
+  res.json({ items, pagination: { limit, offset, returned: items.length }, request_id: req.request_id });
+});
+function safePod(s) { try { return JSON.parse(s || '[]'); } catch { return []; } }
+
+// ---- issue a viewer token + player/embed links ----------------------------
+// Mirrors the website's "Get viewer URL" / "Open player" / "Copy embed code".
+// A third party calls this per viewer to get a short-lived scoped token, the
+// ws_url their player connects to, and ready-made player + iframe links. When
+// the channel requires a PIN the links carry secure=1 so the gate engages.
+const viewerTokenSchema = z.object({
+  viewer_id: z.string().max(120).optional(),
+  ttl_seconds: z.number().int().min(60).max(24 * 3600).optional(),
+});
+router.post('/:id/viewer-token', requireScope('playback:write'), validate(viewerTokenSchema), (req, res, next) => {
+  const row = getOwned(req.params.id, req.tenant.id);
+  if (!row) return next(new ApiError(404, 'CHANNEL_NOT_FOUND', 'No such channel.', 'id'));
+  const viewerId = req.body.viewer_id || auth.id(8);
+  const ttl = req.body.ttl_seconds || 3600;
+  const token = auth.signViewerToken(req.tenant.id, row.id, viewerId, ttl);
+  const secured = !!parseSettings(row).requirePin;
+  const wsUrl = `${cfg.publicUrl.replace(/^http/, 'ws')}/ws?channel=${row.slug}&token=${encodeURIComponent(token)}`;
+  let playerUrl = `${cfg.publicUrl}/player/?ws=${encodeURIComponent(wsUrl)}`;
+  if (secured) playerUrl += `&secure=1&ch=${encodeURIComponent(row.slug)}`;
+  const embed = `<iframe src="${playerUrl}" style="width:100%;aspect-ratio:16/9;border:0" allow="autoplay; fullscreen" allowfullscreen></iframe>`;
+  auth.audit({ tenantId: req.tenant.id, actor: 'api', action: 'channel.viewer_token', resource: row.id, ip: clientIp(req) });
+  res.json({
+    channel_id: row.id,
+    viewer_id: viewerId,
+    token,
+    expires_in: ttl,
+    ws_url: wsUrl,
+    player_url: playerUrl,
+    embed_code: embed,
+    secured,
+    request_id: req.request_id,
+  });
+});
 
 // ---- delete (hard) --------------------------------------------------------
 router.delete('/:id', requireScope('channels:write'), (req, res, next) => {

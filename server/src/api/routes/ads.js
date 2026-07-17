@@ -13,6 +13,8 @@ const db = require('../../db');
 const auth = require('../../auth');
 const adState = require('../../ad_state');
 const hooks = require('../../webhooks');
+const r2 = require('../../r2');
+const cfg = require('../../config');
 const { ApiError, z, validate, requireApiKey, requireScope, rateLimit, logUsage, clientIp } = mw;
 
 const router = express.Router();
@@ -170,6 +172,86 @@ router.get('/state', requireScope('ads:read'), async (req, res, next) => {
     const snapshot = await adState.getBreakState(channelId);
     res.json({ ...snapshot, request_id: req.request_id });
   } catch (e) { next(e); }
+});
+
+// ===========================================================================
+// Ad library CRUD (mirrors the website's Ad Library screen). Registered AFTER
+// the literal routes above (/trigger, /cancel, /state) so `/:id` never shadows
+// them.
+// ===========================================================================
+
+function ownAd(req, _res, next) {
+  const a = getAd.get(req.params.id);
+  if (!a || a.tenant_id !== req.tenant.id) return next(new ApiError(404, 'AD_NOT_FOUND', 'No such ad.', 'id'));
+  req.ad = a;
+  next();
+}
+
+// ---- upload a creative file (multipart -> R2) -----------------------------
+// Field name: "file". Extra fields: name, duration_seconds, full_length,
+// click_url, alt_text. Mirrors POST /v1/ads/upload but x-api-key secured.
+router.post('/upload', requireScope('ads:write'), r2.uploadSingle, (req, res, next) => {
+  if (req.uploadError) return next(new ApiError(req.uploadError.status, req.uploadError.code, req.uploadError.message, 'file'));
+  if (!req.file) return next(new ApiError(400, 'NO_FILE', 'A multipart "file" field is required.', 'file'));
+  const name = (req.body.name || req.file.originalname || 'Untitled').slice(0, 120);
+  const duration = Math.max(1, Math.min(600, Number(req.body.duration_seconds) || 15));
+  const type = r2.detectTypeFromMime(req.file.mimetype);
+  const fullLength = /^(1|true|on|yes)$/i.test(String(req.body.full_length ?? '')) ? 1 : 0;
+  const meta = {};
+  if (req.body.click_url) meta.click_url = String(req.body.click_url).slice(0, 500);
+  if (req.body.alt_text)  meta.alt_text  = String(req.body.alt_text).slice(0, 200);
+
+  const id = auth.id();
+  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, full_length, created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.tenant.id, name, type, req.file.key, 1, duration, JSON.stringify(meta), fullLength, auth.now());
+  auth.audit({ tenantId: req.tenant.id, actor: 'api', action: 'ad.upload', resource: id, ip: clientIp(req) });
+  res.status(201).json({ ...pubAd(getAd.get(id)), request_id: req.request_id });
+});
+
+// ---- get one --------------------------------------------------------------
+router.get('/:id', requireScope('ads:read'), ownAd, (req, res) => {
+  res.json({ ...pubAd(req.ad), request_id: req.request_id });
+});
+
+// ---- resolve a playable/preview URL (signed for uploads, passthrough else) -
+router.get('/:id/signed-url', requireScope('ads:read'), ownAd, async (req, res, next) => {
+  try {
+    const out = await r2.resolvePlayableUrl(req.ad);
+    res.json({ ...out, request_id: req.request_id });
+  } catch (e) { next(new ApiError(500, 'CDN_URL_FAILED', 'Failed to resolve the asset URL.')); }
+});
+
+// ---- update ---------------------------------------------------------------
+const updateAdSchema = z.object({
+  name: z.string().min(1).max(120).optional(),
+  duration_seconds: z.number().int().min(1).max(600).optional(),
+  metadata: z.record(z.any()).optional(),
+  source_url: z.string().url().optional(),   // ignored for uploaded assets
+  full_length: z.boolean().optional(),
+}).refine((b) => Object.keys(b).length > 0, { message: 'At least one field is required' });
+router.patch('/:id', requireScope('ads:write'), ownAd, validate(updateAdSchema), (req, res) => {
+  const b = req.body;
+  const sets = []; const vals = [];
+  if (b.name !== undefined)             { sets.push('name = ?'); vals.push(b.name); }
+  if (b.duration_seconds !== undefined) { sets.push('duration_seconds = ?'); vals.push(b.duration_seconds); }
+  if (b.metadata !== undefined)         { sets.push('metadata = ?'); vals.push(JSON.stringify(b.metadata)); }
+  if (b.full_length !== undefined)      { sets.push('full_length = ?'); vals.push(b.full_length ? 1 : 0); }
+  if (b.source_url !== undefined && !req.ad.is_upload) { sets.push('source = ?'); vals.push(b.source_url); }
+  if (sets.length) {
+    vals.push(req.ad.id);
+    db.prepare(`UPDATE ads SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+  auth.audit({ tenantId: req.tenant.id, actor: 'api', action: 'ad.update', resource: req.ad.id, metadata: b, ip: clientIp(req) });
+  res.json({ ...pubAd(getAd.get(req.ad.id)), request_id: req.request_id });
+});
+
+// ---- delete ---------------------------------------------------------------
+router.delete('/:id', requireScope('ads:write'), ownAd, async (req, res) => {
+  db.prepare('DELETE FROM ads WHERE id = ?').run(req.ad.id);
+  if (req.ad.is_upload) { r2.deleteObject(req.ad.source).catch(() => {}); }
+  auth.audit({ tenantId: req.tenant.id, actor: 'api', action: 'ad.delete', resource: req.ad.id, ip: clientIp(req) });
+  res.json({ id: req.ad.id, deleted: true, request_id: req.request_id });
 });
 
 module.exports = router;
