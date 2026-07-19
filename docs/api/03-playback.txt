@@ -1,0 +1,145 @@
+================================================================================
+OOR-AD API — SECTION 3: PLAYBACK URL / SESSION MANAGEMENT
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Auth:       x-api-key header (see 01-keys.txt)
+Scopes:     playback:write, sessions:read, sessions:write  ('*' = all)
+Doc source: server/src/api/routes/playback.js
+================================================================================
+
+This section produces PROTECTED, pin-based playback URLs and manages the live
+device sessions behind them. Enforcement (device limit, kick, signing) runs
+through the same Redis session registry the player uses, so it is instant and
+cluster-wide.
+
+VIEWER AUTH FLOW (for the player a third party builds):
+  1. You call POST /playback/generate  -> get { pin, playback_url, token }.
+  2. Give the pin to the viewer (or embed playback_url directly).
+  3. The player calls POST /v1/stream/authorize { pin, deviceId, channelSlug }
+     -> { streamToken, sessionId }  (429/409/401 with reasons on limit/bad pin).
+  4. Player loads /v1/stream/manifest?stoken=<streamToken> (signed HLS).
+  5. Player opens the lifecycle WS /stream-ws?stoken=... to receive kicks.
+  (All of /v1/stream/* is documented in the streaming-security guide.)
+
+================================================================================
+POST /api/v1/playback/generate
+--------------------------------------------------------------------------------
+Purpose:   Generate a signed, pin-based playback URL for a channel. Mints a
+           channel-scoped PIN with the given device limit (or reuses one you
+           pass), enables the protected payload, and returns a portable URL +
+           signed token.
+Scope:     playback:write
+Body:
+    {
+      "channel_id":     "Wt9Qk0DELh-hZTCQ",   // required
+      "pin":            "117794",              // optional — reuse an existing PIN
+      "expiry_seconds": 3600,                   // optional (60..2592000, default 3600)
+      "device_limit":   2,                       // optional (1..100, default 1)
+      "label":          "Customer #42"          // optional (only when minting)
+    }
+
+Example:
+    curl -X POST https://host/api/v1/playback/generate \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" \
+      -d '{"channel_id":"Wt9Qk0DELh-hZTCQ","expiry_seconds":3600,"device_limit":2}'
+
+Success (201):
+    {
+      "playback_url": "https://host/player/?ws=...&secure=1&ch=pb-test",
+      "ws_url":       "wss://host/ws?channel=pb-test&token=...",
+      "token":        "eyJhbGciOi...",          // signed playback token
+      "pin":          "117794",
+      "channel_id":   "Wt9Qk0DELh-hZTCQ",
+      "device_limit": 2,
+      "payload_protected": true,
+      "expires_at":   1783804600000,
+      "authorize_endpoint": "/v1/stream/authorize",
+      "request_id":   "req_..."
+    }
+
+Errors:
+    404 CHANNEL_NOT_FOUND      { "field":"channel_id" }
+    404 PIN_NOT_FOUND          { "field":"pin" }       (when reusing a pin)
+    409 PIN_CHANNEL_MISMATCH   { "field":"pin" }       (pin bound to another channel)
+    400 VALIDATION_ERROR
+
+================================================================================
+POST /api/v1/playback/payload
+--------------------------------------------------------------------------------
+Purpose:   Toggle the protected payload wrapper (PIN + device-limit + signing)
+           on/off for a channel. Returns the updated player URL.
+Scope:     playback:write
+Body:
+    { "channel_id": "Wt9Qk0DELh-hZTCQ", "enabled": true }
+
+Example:
+    curl -X POST https://host/api/v1/playback/payload \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" \
+      -d '{"channel_id":"Wt9Qk0DELh-hZTCQ","enabled":false}'
+
+Success (200):
+    {
+      "channel_id": "Wt9Qk0DELh-hZTCQ",
+      "payload_protected": false,               // when enabled=false: raw URL, no gate
+      "playback_url": "https://host/player/?ws=...",   // no secure=1 when off
+      "ws_url": "wss://host/ws?channel=...&token=...",
+      "request_id": "req_..."
+    }
+
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+GET /api/v1/playback/sessions?channel_id={id}
+--------------------------------------------------------------------------------
+Purpose:   List active device sessions for a channel (across its PINs).
+Scope:     sessions:read
+Query:     channel_id (required)
+
+Example:
+    curl "https://host/api/v1/playback/sessions?channel_id=Wt9Qk0DELh-hZTCQ" \
+      -H "x-api-key: adi_xxx"
+
+Success (200):
+    {
+      "channel_id": "Wt9Qk0DELh-hZTCQ",
+      "device_count": 1,
+      "sessions": [
+        {
+          "session_id": "69514b2f403ceca64881ab4f27d9b892",
+          "pin": "117794",
+          "device_id": "api-dev-11111111",
+          "device_label": "Chrome on Android",
+          "ip": "203.0.113.9",
+          "connected_at": 1783804000000,
+          "last_heartbeat": 1783804090000
+        }
+      ],
+      "request_id": "req_..."
+    }
+
+Errors:
+    400 VALIDATION_ERROR  { "field":"channel_id" }   (missing param)
+    404 CHANNEL_NOT_FOUND
+
+================================================================================
+POST /api/v1/playback/sessions/revoke
+--------------------------------------------------------------------------------
+Purpose:   Revoke / kick an active session immediately. Fires the Redis
+           session:commands signal so the player's lifecycle WS closes within
+           seconds (all workers).
+Scope:     sessions:write
+Body:
+    { "pin": "117794", "session_id": "69514b2f...", "reason": "abuse" }
+
+Example:
+    curl -X POST https://host/api/v1/playback/sessions/revoke \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" \
+      -d '{"pin":"117794","session_id":"69514b2f403ceca64881ab4f27d9b892"}'
+
+Success (200):
+    { "revoked": true, "session_id": "69514b2f...", "request_id": "req_..." }
+
+Errors:
+    404 PIN_NOT_FOUND       { "field":"pin" }
+    404 SESSION_NOT_FOUND   { "field":"session_id" }
+================================================================================

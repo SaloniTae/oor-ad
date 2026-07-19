@@ -89,16 +89,18 @@ r.post('/upload', uploadSingle, (req, res, next) => {
   const name = (req.body.name || req.file.originalname).slice(0, 120);
   const duration = Math.max(1, Math.min(600, Number(req.body.duration_seconds) || 15));
   const type = detectTypeFromMime(req.file.mimetype);
+  // Accept full_length from multipart bodies (strings). Truthy: "1","true","on".
+  const fullLength = /^(1|true|on|yes)$/i.test(String(req.body.full_length ?? '')) ? 1 : 0;
   const meta = {};
   if (req.body.click_url) meta.click_url = String(req.body.click_url).slice(0, 500);
   if (req.body.alt_text)  meta.alt_text  = String(req.body.alt_text).slice(0, 200);
 
   const id = auth.id();
   const rel = req.file.key; // multer-s3 sets the 'key' property
-  
-  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, created_at)
-              VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(id, req.tenant.id, name, type, rel, 1, duration, JSON.stringify(meta), auth.now());
+
+  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, full_length, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.tenant.id, name, type, rel, 1, duration, JSON.stringify(meta), fullLength, auth.now());
   
   auth.audit({ tenantId: req.tenant.id, actor: req.apiKey?.id || 'session', action: 'ad.upload', resource: id, ip: req.ip });
   res.status(201).json({ ad: pub(getAd.get(id)) });
@@ -111,14 +113,15 @@ const CreateBody = z.object({
   source: z.string().url(),
   duration_seconds: z.number().int().min(1).max(600),
   metadata: z.record(z.any()).optional(),
+  full_length: z.boolean().optional(),
 });
 
 r.post('/', validate(CreateBody), (req, res) => {
   const b = req.body;
   const id = auth.id();
-  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, created_at)
-              VALUES (?,?,?,?,?,?,?,?,?)`)
-    .run(id, req.tenant.id, b.name, b.type, b.source, 0, b.duration_seconds, JSON.stringify(b.metadata || {}), auth.now());
+  db.prepare(`INSERT INTO ads (id, tenant_id, name, type, source, is_upload, duration_seconds, metadata, full_length, created_at)
+              VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, req.tenant.id, b.name, b.type, b.source, 0, b.duration_seconds, JSON.stringify(b.metadata || {}), b.full_length ? 1 : 0, auth.now());
   res.status(201).json({ ad: pub(getAd.get(id)) });
 });
 
@@ -139,7 +142,8 @@ const UpdateBody = z.object({
   name: z.string().min(1).max(120).optional(),
   duration_seconds: z.number().int().min(1).max(600).optional(),
   metadata: z.record(z.any()).optional(),
-  source: z.string().url().optional(), 
+  source: z.string().url().optional(),
+  full_length: z.boolean().optional(),
 });
 
 r.patch('/:id', ownAd, validate(UpdateBody), (req, res) => {
@@ -149,6 +153,7 @@ r.patch('/:id', ownAd, validate(UpdateBody), (req, res) => {
   if (b.duration_seconds !== undefined) { sets.push('duration_seconds = ?'); vals.push(b.duration_seconds); }
   if (b.metadata !== undefined)         { sets.push('metadata = ?');         vals.push(JSON.stringify(b.metadata)); }
   if (b.source !== undefined && !req.ad.is_upload) { sets.push('source = ?'); vals.push(b.source); }
+  if (b.full_length !== undefined)      { sets.push('full_length = ?');      vals.push(b.full_length ? 1 : 0); }
   if (sets.length) {
     vals.push(req.ad.id);
     db.prepare(`UPDATE ads SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -196,7 +201,7 @@ r.get('/:id/signed-url', ownAd, async (req, res, next) => {
 const publicRouter = express.Router();
 publicRouter.get('/:id/asset', (req, res) => res.status(404).send('Assets now served via Cloudflare CDN'));
 
-function pub(a) { return { ...a, metadata: JSON.parse(a.metadata || '{}'), is_upload: !!a.is_upload }; }
+function pub(a) { return { ...a, metadata: JSON.parse(a.metadata || '{}'), is_upload: !!a.is_upload, full_length: !!a.full_length }; }
 function ownAd(req, _res, next) {
   const a = getAd.get(req.params.id);
   if (!a || a.tenant_id !== req.tenant.id) return next(new HttpError(404, 'not_found', 'Ad not found'));

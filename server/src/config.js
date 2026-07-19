@@ -18,6 +18,10 @@ const cfg = {
   adminCors:  (process.env.ADMIN_CORS || '').split(',').map(s => s.trim()).filter(Boolean),
   redisUrl:   process.env.REDIS_URL || '',
   logLevel:   process.env.LOG_LEVEL || 'info',
+  // Master admin key for the API-first surface. Lets the sole admin manage
+  // keys purely over the API (no website dependency). Optional — if unset, the
+  // admin manages keys via a full-access API key minted from the dashboard.
+  adminApiKey: process.env.ADMIN_API_KEY || '',
   // Iframe embed control. Comma-separated list of origins allowed to embed
   // the /player. Special values:
   //   ""  or unset -> allow all origins (dev-friendly, use in local testing)

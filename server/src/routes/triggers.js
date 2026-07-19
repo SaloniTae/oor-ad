@@ -88,10 +88,16 @@ r.post('/:id/trigger', validate(TriggerBody), async (req, res, next) => {
       adType: ad.type,
       adUrl: adUrl, // Perfectly resolved CDN URL injected here
       duration: duration,
+      full_length: !!ad.full_length,
       metadata: JSON.parse(ad.metadata || '{}')
     });
     totalAdDuration += duration;
   }
+
+  // A full-length ad anywhere in the pod means the break has no server-known
+  // end: it resumes ONLY when a viewer emits ad.complete (handled in ws.js).
+  // We therefore MUST NOT arm the auto-resume timer below.
+  const hasFullLength = resolvedPod.some((a) => a.full_length);
 
   const BUMPER_DURATION_SEC = 7;
   const lead = req.body.lead_ms ?? 500;
@@ -104,30 +110,53 @@ r.post('/:id/trigger', validate(TriggerBody), async (req, res, next) => {
 
   const cmd = {
     type: 'command', action: 'play_pod',
-    triggerId, 
+    triggerId,
     pod: resolvedPod,
-    bumper: BUMPER_DURATION_SEC, 
+    bumper: BUMPER_DURATION_SEC,
     startAt,
+    // Full-length: the client plays each full_length ad to its real `ended`
+    // event and only then fires ad.complete. No server timer resumes live.
+    noAutoResume: hasFullLength,
     ts: Date.now(),
   };
 
-  insertTrigger.run(triggerId, req.tenant.id, channel.id, firstAdId, totalAdDuration, 'active', startAt, endAt, req.apiKey?.id || 'session', Date.now(), JSON.stringify(resolvedPod));
-  ws.setState(channel.id, { mode: 'pod', triggerId, pod: resolvedPod, bumper: BUMPER_DURATION_SEC, startAt });
-  
-  const delivered = ws.broadcast(channel.id, cmd);
+  const podState = { mode: 'pod', triggerId, pod: resolvedPod, bumper: BUMPER_DURATION_SEC, startAt, endAt, noAutoResume: hasFullLength };
 
-  const t = setTimeout(() => {
-    const checkState = activeTrigger.get(channel.id);
-    if (checkState && checkState.id === triggerId) {
-      setTriggerStatus.run('completed', triggerId);
-      ws.setState(channel.id, { mode: 'live' });
-      ws.broadcast(channel.id, { type: 'command', action: 'resume_live', triggerId, ts: Date.now() });
-      hooks.fire(req.tenant, 'ad.completed', { channel_id: channel.id, trigger_id: triggerId });
-    }
-    timers.delete(triggerId);
-  }, totalStateDurationMs + lead);
-  
-  timers.set(triggerId, t);
+  insertTrigger.run(triggerId, req.tenant.id, channel.id, firstAdId, totalAdDuration, 'active', startAt, endAt, req.apiKey?.id || 'session', Date.now(), JSON.stringify(resolvedPod));
+  ws.setState(channel.id, podState);
+
+  const delivered = ws.broadcast(channel.id, cmd);
+  // Cluster fan-out: also reach viewers connected to OTHER workers, and keep
+  // the Redis ad-state in sync so the API /ads/state endpoint is correct.
+  try {
+    const adState = require('../ad_state');
+    adState.setState(channel.id, podState).catch(() => {});
+    adState.publishCommand(channel.id, { state: null, wire: cmd, originWorker: process.pid }).catch(() => {});
+  } catch {}
+
+  // Auto-resume timer — ONLY for normal (fixed-duration) breaks. A full-length
+  // break has no reliable end time, so we never schedule resume_live here; the
+  // viewer clients drive resume via the ad.complete WebSocket event (handled in
+  // ws.js), which clears state + broadcasts resume_live cluster-wide.
+  if (!hasFullLength) {
+    const t = setTimeout(() => {
+      const checkState = activeTrigger.get(channel.id);
+      if (checkState && checkState.id === triggerId) {
+        setTriggerStatus.run('completed', triggerId);
+        ws.setState(channel.id, { mode: 'live' });
+        ws.broadcast(channel.id, { type: 'command', action: 'resume_live', triggerId, ts: Date.now() });
+        try {
+          const adState = require('../ad_state');
+          adState.setState(channel.id, { mode: 'live' }).catch(() => {});
+          adState.publishCommand(channel.id, { state: { mode: 'live' }, wire: { type: 'command', action: 'resume_live', triggerId, ts: Date.now() }, originWorker: process.pid }).catch(() => {});
+        } catch {}
+        hooks.fire(req.tenant, 'ad.completed', { channel_id: channel.id, trigger_id: triggerId });
+      }
+      timers.delete(triggerId);
+    }, totalStateDurationMs + lead);
+
+    timers.set(triggerId, t);
+  }
 
   auth.audit({ tenantId: req.tenant.id, actor: req.apiKey?.id || 'session', action: 'trigger.create_pod',
                resource: triggerId, metadata: { channel: channel.id, podLength: resolvedPod.length, totalDuration: totalAdDuration }, ip: req.ip });

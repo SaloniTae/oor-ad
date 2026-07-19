@@ -106,4 +106,50 @@ try {
   // Column already exists, safe to ignore
 }
 
+// --- AUTOMATIC MIGRATION: full-length ads --------------------------------
+// full_length = 1 means the ad plays to its natural end. The server must NOT
+// auto-schedule resume_live on a timer for a break containing such an ad; the
+// live stream resumes only when a viewer client emits the `ad.complete` event.
+try {
+  db.exec(`ALTER TABLE ads ADD COLUMN full_length INTEGER DEFAULT 0`);
+} catch (e) {
+  // Column already exists, safe to ignore
+}
+
+// --- AUTOMATIC MIGRATION: API-first key lifecycle (Section 1) ---------------
+// Idempotent ALTERs (same pattern as pod_data above). Adds the columns the
+// key lifecycle needs beyond the original api_keys shape:
+//   paused        0|1  — temporary disable without deleting
+//   revoked_at    ms   — hard revoke timestamp (distinct from `disabled`)
+//   expires_at    ms   — optional key expiry (null = never)
+//   rotated_from  id   — audit link when a key was created by rotating another
+//   last_ip       text — last requester IP (telemetry)
+for (const stmt of [
+  `ALTER TABLE api_keys ADD COLUMN paused INTEGER DEFAULT 0`,
+  `ALTER TABLE api_keys ADD COLUMN revoked_at INTEGER`,
+  `ALTER TABLE api_keys ADD COLUMN expires_at INTEGER`,
+  `ALTER TABLE api_keys ADD COLUMN rotated_from TEXT`,
+  `ALTER TABLE api_keys ADD COLUMN last_ip TEXT`,
+]) {
+  try { db.exec(stmt); } catch (e) { /* column exists */ }
+}
+
+// Per-key request log — powers usage stats, audit, and anomaly detection.
+// High write volume, so it is intentionally minimal and indexed by key+time.
+db.exec(`
+CREATE TABLE IF NOT EXISTS api_key_usage (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  key_id TEXT NOT NULL,
+  tenant_id TEXT,
+  method TEXT NOT NULL,
+  endpoint TEXT NOT NULL,
+  status INTEGER NOT NULL,
+  ip TEXT,
+  request_id TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_key_usage_key_time ON api_key_usage(key_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_key_usage_time ON api_key_usage(created_at);
+`);
+
 module.exports = db;

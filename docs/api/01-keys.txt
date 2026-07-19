@@ -1,0 +1,201 @@
+================================================================================
+OOR-AD API — SECTION 1: ADMIN / API KEY MANAGEMENT
+================================================================================
+Base URL:        https://<your-host>/api/v1
+Auth surface:    x-api-key header on EVERY endpoint (except /ping).
+Doc version:     kept in sync with server/src/api/routes/keys.js
+================================================================================
+
+AUTHENTICATION MODEL
+--------------------------------------------------------------------------------
+- Every request sends:            x-api-key: <your key>
+  (Authorization: Bearer <key> is also accepted.)
+- Two kinds of keys:
+    * Admin / full-access  -> scopes = ["*"].  Can manage keys + everything.
+    * Restricted           -> explicit scopes (read-only by default).
+- Key management endpoints (this file) require the ADMIN key: either the
+  master key (ADMIN_API_KEY env var) or a full-access ("*") key.
+- Keys are HASHED at rest (sha256). The plaintext is returned ONCE at
+  create/rotate and never again.
+
+KEY STATUS VALUES:  active | paused | revoked | expired
+
+AUTH ERROR CODES (returned by any endpoint):
+    MISSING_KEY     401  no x-api-key header
+    INVALID_KEY     401  key not recognised
+    REVOKED         403  key was revoked (or hard-disabled)
+    PAUSED          403  key temporarily paused
+    EXPIRED         403  key past its expiry
+    TENANT_DISABLED 403  owning account disabled
+    ADMIN_ONLY      403  endpoint needs the admin/full-access key
+    INSUFFICIENT_SCOPE 403 restricted key lacks the needed scope
+    RATE_LIMITED    429  per-key limit exceeded (x-ratelimit-* headers set)
+
+STANDARD ERROR ENVELOPE (all errors):
+    { "error_code": "...", "message": "...", "field": "<if applicable>",
+      "request_id": "req_..." }
+Every response also carries an x-request-id header for server-log tracing.
+
+================================================================================
+POST /api/v1/admin/keys
+--------------------------------------------------------------------------------
+Purpose:        Generate a new API key (full-access or restricted).
+Auth:           Admin key (master or full-access).
+Headers:        x-api-key: <admin key>
+                Content-Type: application/json
+
+Request body:
+    {
+      "name":            "Partner A",              // required, 1-80 chars
+      "access":          "restricted",             // "full" | "restricted" | ["channels:read", ...]
+      "rate_limit_rpm":  240,                        // optional, per-minute cap
+      "ttl_seconds":     2592000                     // optional, key auto-expires
+    }
+    Valid explicit scopes: channels:read, channels:write, playback:write,
+      sessions:read, sessions:write, ads:read, ads:write, telemetry:read
+
+Example request:
+    curl -X POST https://host/api/v1/admin/keys \
+      -H "x-api-key: adi_master_xxx" -H "Content-Type: application/json" \
+      -d '{"name":"Partner A","access":"restricted"}'
+
+Success (201) — KEY SHOWN ONCE:
+    {
+      "id": "MEUQvvb5VLG8Tv1S",
+      "name": "Partner A",
+      "key_prefix": "a68a63a6",
+      "masked_key": "adi_a68a63a6_••••••••",
+      "scopes": ["channels:read","sessions:read","ads:read","telemetry:read"],
+      "access": "restricted",
+      "status": "active",
+      "rate_limit_rpm": null,
+      "expires_at": null,
+      "created_at": 1783799964000,
+      "key": "adi_a68a63a6_1a2b3c4d5e6f7g8h9i0j",
+      "warning": "Store this key now — it will never be shown again.",
+      "request_id": "req_..."
+    }
+
+Error (400) — bad input:
+    { "error_code": "VALIDATION_ERROR", "message": "String must contain at least 1 character(s)",
+      "field": "name", "request_id": "req_..." }
+
+================================================================================
+GET /api/v1/admin/keys
+--------------------------------------------------------------------------------
+Purpose:        List all keys with status + metadata (never the secret).
+Auth:           Admin key.
+
+Example request:
+    curl https://host/api/v1/admin/keys -H "x-api-key: adi_master_xxx"
+
+Success (200):
+    {
+      "items": [
+        { "id":"MEUQvvb5VLG8Tv1S", "name":"Partner A", "key_prefix":"a68a63a6",
+          "masked_key":"adi_a68a63a6_••••••••", "access":"restricted",
+          "status":"active", "rate_limit_rpm":null, "last_used_at":1783800000000,
+          "last_ip":"203.0.113.9", "created_at":1783799964000 }
+      ],
+      "request_id": "req_..."
+    }
+
+================================================================================
+GET /api/v1/admin/keys/{id}
+--------------------------------------------------------------------------------
+Purpose:        Get one key + usage stats + recent request log (audit).
+Auth:           Admin key.
+Query:          ?limit=50   (recent requests to return, max 500)
+
+Example request:
+    curl https://host/api/v1/admin/keys/MEUQvvb5VLG8Tv1S -H "x-api-key: adi_master_xxx"
+
+Success (200):
+    {
+      "key": { "id":"MEUQvvb5VLG8Tv1S", "status":"active", ... },
+      "stats": { "total_requests":128, "ok_requests":120, "error_requests":8,
+                 "requests_24h":40 },
+      "recent_requests": [
+        { "method":"POST","endpoint":"/api/v1/playback/generate","status":200,
+          "ip":"203.0.113.9","request_id":"req_...","created_at":1783800000000 }
+      ],
+      "request_id": "req_..."
+    }
+
+Error (404):
+    { "error_code":"KEY_NOT_FOUND", "message":"No such API key.", "field":"id",
+      "request_id":"req_..." }
+
+================================================================================
+DELETE /api/v1/admin/keys/{id}
+--------------------------------------------------------------------------------
+Purpose:        Revoke a key INSTANTLY (irreversible).
+Auth:           Admin key.
+
+Example request:
+    curl -X DELETE https://host/api/v1/admin/keys/MEUQvvb5VLG8Tv1S \
+      -H "x-api-key: adi_master_xxx"
+
+Success (200):
+    { "id":"MEUQvvb5VLG8Tv1S", "status":"revoked", "revoked_at":1783800500000,
+      "request_id":"req_..." }
+
+After this, any request using that key returns 403 REVOKED.
+
+================================================================================
+POST /api/v1/admin/keys/{id}/pause
+POST /api/v1/admin/keys/{id}/unpause
+--------------------------------------------------------------------------------
+Purpose:        Temporarily disable / re-enable a key without deleting it.
+Auth:           Admin key.
+
+Example request:
+    curl -X POST https://host/api/v1/admin/keys/MEUQvvb5VLG8Tv1S/pause \
+      -H "x-api-key: adi_master_xxx"
+
+Success (200):
+    { "id":"MEUQvvb5VLG8Tv1S", "status":"paused", "request_id":"req_..." }
+    (unpause returns "status":"active")
+
+While paused, the key's own requests return 403 PAUSED.
+
+Error (409) — cannot pause a revoked key:
+    { "error_code":"REVOKED", "message":"Key is revoked and cannot be paused.",
+      "request_id":"req_..." }
+
+================================================================================
+POST /api/v1/admin/keys/{id}/rotate
+--------------------------------------------------------------------------------
+Purpose:        Revoke the old key and issue a NEW one with the SAME scope +
+                rate limit. Returns the new plaintext ONCE.
+Auth:           Admin key.
+
+Example request:
+    curl -X POST https://host/api/v1/admin/keys/MEUQvvb5VLG8Tv1S/rotate \
+      -H "x-api-key: adi_master_xxx"
+
+Success (201):
+    {
+      "id": "m-C5JhxE_2GNVipC",          // new key id
+      "rotated_from": "MEUQvvb5VLG8Tv1S", // old key (now revoked)
+      "status": "active",
+      "scopes": ["channels:read", ...],
+      "key": "adi_9f8e7d6c_newsecretshownonce",
+      "warning": "Store this key now — it will never be shown again. The previous key is revoked.",
+      "request_id": "req_..."
+    }
+
+The OLD key immediately returns 403 REVOKED.
+
+================================================================================
+SECURITY NOTES
+--------------------------------------------------------------------------------
+- Keys hashed at rest; plaintext shown once (create/rotate) — never stored.
+- Per-key rate limiting is Redis-backed (shared across all workers).
+- Every request is logged per key (method, endpoint, status, ip, request_id,
+  timestamp) -> GET /admin/keys/{id} for the audit trail.
+- Anomaly detection: sustained abuse (rate-limit floods / 4xx storms, ~100
+  suspicious events/min) AUTO-PAUSES the key and writes an audit entry.
+- The master key (ADMIN_API_KEY env) lets the admin manage everything over the
+  API with zero website dependency.
+================================================================================

@@ -91,6 +91,23 @@ function logout() {
 }
 function isAdmin() { return state.tenant?.plan === 'admin'; }
 
+// ---- theme (shared with streaming-security page via 'ai.theme') ------------
+const THEME_MQ = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+function themePref() { return localStorage.getItem('ai.theme') || 'dark'; }
+function themeEffective(t) { return t === 'auto' ? (THEME_MQ && THEME_MQ.matches ? 'light' : 'dark') : t; }
+function applyTheme(t) { document.documentElement.setAttribute('data-theme', themeEffective(t)); }
+function themeIcon(t) { return t === 'light' ? '☀️' : t === 'dark' ? '🌙' : '🌗'; }
+function cycleTheme() {
+  const order = ['auto', 'dark', 'light'];
+  const next = order[(order.indexOf(themePref()) + 1) % order.length];
+  localStorage.setItem('ai.theme', next);
+  applyTheme(next);
+  const btn = document.querySelector('[data-act=theme]');
+  if (btn) btn.textContent = themeIcon(next);
+}
+applyTheme(themePref());
+if (THEME_MQ && THEME_MQ.addEventListener) THEME_MQ.addEventListener('change', () => { if (themePref() === 'auto') applyTheme('auto'); });
+
 // ---- dashboard shell -------------------------------------------------------
 function renderDash() {
   const n = clone('tpl-dash');
@@ -98,7 +115,9 @@ function renderDash() {
   document.querySelector('[data-who]').textContent =
     (state.tenant?.email || '') + (isAdmin() ? ' — ADMIN' : '');
   document.querySelector('[data-act=logout]').onclick = logout;
-  
+  const themeBtn = document.querySelector('[data-act=theme]');
+  if (themeBtn) { themeBtn.textContent = themeIcon(themePref()); themeBtn.onclick = cycleTheme; }
+
   // Show/hide admin-only nav
   document.querySelectorAll('.top nav a[data-admin]').forEach(a => a.classList.toggle('hidden', !isAdmin()));
   document.querySelectorAll('.top nav a[data-nav]').forEach(a => a.onclick = () => nav(a.dataset.nav));
@@ -228,7 +247,7 @@ async function openChannel(c, view) {
     try {
       const { state, viewers } = await api('GET', `/v1/channels/${ch.id}/state`);
       if (state.mode === 'live') {
-        teleStatus.innerHTML = `<div style="color:#4ade80; font-weight:700; font-size:18px; margin-bottom:4px;">● BROADCAST LIVE</div><div class="muted">Connected Viewers: ${viewers}</div>`;
+        teleStatus.innerHTML = `<div style="color:var(--ok); font-weight:700; font-size:18px; margin-bottom:4px; letter-spacing:-0.01em;">● BROADCAST LIVE</div><div class="muted">Connected Viewers: ${viewers}</div>`;
       } else if (state.mode === 'pod' || state.mode === 'ad') {
         const pod = state.pod || [{ duration: state.duration }];
         const elapsed = Math.max(0, (Date.now() - state.startAt) / 1000);
@@ -251,10 +270,10 @@ async function openChannel(c, view) {
         }
         
         teleStatus.innerHTML = `
-          <div style="color:#ff4d5e; font-weight:700; font-size:18px;">● COMMERCIAL BREAK (${Math.ceil(remaining)}s left)</div>
-          <div style="margin-top: 10px; font-size:14px;">Current Phase: <b>${phase}</b></div>
-          <div style="width: 100%; height: 8px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-top: 14px; overflow: hidden;">
-             <div style="width: ${Math.min(100, (elapsed/total)*100)}%; height: 100%; background: #ff4d5e; border-radius: 4px; transition: width 1s linear;"></div>
+          <div style="color:var(--accent-red); font-weight:700; font-size:18px; letter-spacing:-0.01em;">● COMMERCIAL BREAK (${Math.ceil(remaining)}s left)</div>
+          <div style="margin-top: 10px; font-size:14px; color:var(--text-2);">Current Phase: <b style="color:var(--text-main)">${phase}</b></div>
+          <div style="width: 100%; height: 8px; background: var(--surface-3); border-radius: 999px; margin-top: 14px; overflow: hidden;">
+             <div style="width: ${Math.min(100, (elapsed/total)*100)}%; height: 100%; background: var(--accent-red); border-radius: 999px; transition: width 1s linear;"></div>
           </div>
           <div style="margin-top: 14px; font-size: 13px;" class="muted">Connected Viewers: ${viewers}</div>
         `;
@@ -284,7 +303,7 @@ async function openChannel(c, view) {
       const durOptions = [5, 10, 15, 30, ad.duration_seconds].filter((v, i, a) => a.indexOf(v) === i).sort((a,b)=>a-b);
       const durPills = h('div', { style: 'display:flex; gap: 6px; margin-top: 8px; overflow-x: auto;' },
         ...durOptions.map(d => {
-          const pill = h('button', { class: `small ${d === ad.override_duration ? 'primary' : ''}`, style: d !== ad.override_duration ? 'background: rgba(255,255,255,0.05); border: 1px solid var(--glass-border);' : '', onclick: () => {
+          const pill = h('button', { class: `small ${d === ad.override_duration ? 'primary' : ''}`, style: d !== ad.override_duration ? 'background: var(--surface-2); border: 1px solid var(--border);' : '', onclick: () => {
             ad.override_duration = d;
             renderStager();
           }}, `${d}s`);
@@ -293,7 +312,7 @@ async function openChannel(c, view) {
         })
       );
 
-      list.append(h('div', { class: 'card', style: 'padding: 14px; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center; border-color: rgba(255, 77, 94, 0.4); background: rgba(255, 77, 94, 0.08);' }, 
+      list.append(h('div', { class: 'card', style: 'padding: 14px; margin-bottom: 0; display: flex; justify-content: space-between; align-items: center; border-color: color-mix(in srgb, var(--accent-red) 35%, transparent); background: var(--accent-soft);' },
         h('div', { style: 'flex-grow: 1;' }, 
           h('div', { style: 'font-weight: 600; font-size: 14px; display:flex; align-items:center; gap:8px;' }, h('span', {style:'opacity:0.5;'}, `${idx + 1}.`), ad.name),
           durPills
@@ -325,16 +344,18 @@ async function openChannel(c, view) {
       triggerErr.className = 'ok';
       stagedPod = [];
       renderStager();
-    } catch (e) { 
-      triggerErr.className = 'err'; triggerErr.textContent = e.message; 
+    } catch (e) {
+      triggerErr.className = 'err'; triggerErr.textContent = e.message;
+    } finally {
+      // Always restore the button — on success AND error — so it never sticks on "Triggering…".
       doTrigger.disabled = false;
       doTrigger.textContent = 'Trigger Commercial Break';
     }
   }}, 'Trigger Commercial Break');
 
-  const adsListContainer = h('div', { style: 'max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--glass-border); padding: 12px; border-radius: 12px; background: rgba(0,0,0,0.3);' },
+  const adsListContainer = h('div', { style: 'max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); padding: 12px; border-radius: 14px; background: var(--surface-2);' },
     ...(adsRes.ads.length ? adsRes.ads.map(a => {
-      return h('div', { class: 'row', style: 'justify-content: space-between; padding: 10px 14px; background: rgba(255,255,255,0.03); border-radius: 8px; border: 1px solid rgba(255,255,255,0.05); transition: background 0.2s;' },
+      return h('div', { class: 'row', style: 'justify-content: space-between; padding: 10px 14px; background: var(--surface-1); border-radius: 10px; border: 1px solid var(--border); transition: background 0.2s;' },
         h('div', { style: 'font-size: 13px; font-weight: 500;' }, `${a.name} `, h('span', { class: 'muted', style: 'margin-left:8px; font-size: 11px;' }, `${a.type.toUpperCase()} • ${a.duration_seconds}s`)),
         h('button', { class: 'small outline', onclick: () => { stagedPod.push({ ...a, override_duration: a.duration_seconds }); renderStager(); } }, '+ Add')
       );
@@ -344,7 +365,15 @@ async function openChannel(c, view) {
   renderStager();
 
   const doResume = h('button', { class: 'danger', style: 'width: 100%; justify-content: center; padding: 12px; margin-top: 12px; font-weight: 600;', onclick: async () => {
-    try { await api('POST', `/v1/channels/${ch.id}/resume`); triggerErr.className='ok'; triggerErr.textContent='Force Resumed Live'; } catch(e){triggerErr.className='err';triggerErr.textContent=e.message;}
+    try {
+      await api('POST', `/v1/channels/${ch.id}/resume`);
+      triggerErr.className='ok'; triggerErr.textContent='Force Resumed Live';
+    } catch(e){ triggerErr.className='err'; triggerErr.textContent=e.message; }
+    finally {
+      // Return the trigger control to a clean idle state after a cancel.
+      doTrigger.disabled = false;
+      doTrigger.textContent = 'Trigger Commercial Break';
+    }
   }}, 'Force Resume Live (Cancel Ads)');
 
   const podSequencerCard = h('div', { class: 'card' },
@@ -355,6 +384,87 @@ async function openChannel(c, view) {
     doTrigger,
     doResume,
     triggerErr
+  );
+
+  // ==== STREAMING SECURITY CARD (one system: PIN + device limit + signed link) ====
+  const secSettings = { ...(ch.settings || {}) };
+
+  const requireToggle = h('input', { type: 'checkbox', ...(secSettings.requirePin ? { checked: true } : {}) });
+  const toggleStatus = h('span', { class: secSettings.requirePin ? 'ok' : 'muted', style: 'font-size:13px' },
+    secSettings.requirePin ? 'PIN required — players must authorize before playback.' : 'Open — anyone with the link can watch.');
+  requireToggle.onchange = async () => {
+    const on = requireToggle.checked;
+    try {
+      const next = { ...secSettings, requirePin: on };
+      await api('PATCH', `/v1/channels/${ch.id}`, { settings: next });
+      secSettings.requirePin = on; ch.settings = next;
+      toggleStatus.className = on ? 'ok' : 'muted';
+      toggleStatus.textContent = on ? 'PIN required — players must authorize before playback.' : 'Open — anyone with the link can watch.';
+    } catch (e) { requireToggle.checked = !on; toggleStatus.className = 'err'; toggleStatus.textContent = e.message; }
+  };
+
+  const pinListEl = h('div', { style: 'margin-top:8px' }, h('div', { class: 'muted' }, 'Loading PINs…'));
+  async function reloadPins() {
+    pinListEl.innerHTML = '';
+    try {
+      const j = await api('GET', '/v1/admin/streaming/pins');
+      const mine = (j.items || []).filter((p) => p.channelId === ch.id);
+      if (!mine.length) { pinListEl.append(h('div', { class: 'muted' }, 'No PINs for this channel yet — create one below.')); return; }
+      pinListEl.append(tbl(['PIN', 'Label', 'Max devices', ''], mine.map((p) => [
+        h('span', { style: 'font-family:ui-monospace,monospace;font-weight:700;letter-spacing:1.5px;color:var(--accent-red)' }, p.pin),
+        p.label || '—',
+        String(p.maxDevices),
+        h('button', { class: 'small danger', onclick: async () => {
+          if (!confirm('Disable this PIN? Active sessions remain until they expire.')) return;
+          try { await api('DELETE', `/v1/admin/streaming/pins/${p.pin}`); reloadPins(); } catch (e) { alert(e.message); }
+        } }, p.disabled ? 'Disabled' : 'Disable'),
+      ])));
+    } catch (e) { pinListEl.append(h('div', { class: 'err' }, 'Could not load PINs: ' + e.message)); }
+  }
+  reloadPins();
+
+  const npLabel = h('input', { placeholder: 'Label (e.g. Alice)', style: 'max-width:220px' });
+  const npMax = h('input', { type: 'number', value: '1', min: '1', max: '100', style: 'width:120px' });
+  const npErr = h('div', { class: 'err' });
+  const npCreate = h('button', { class: 'primary', onclick: async () => {
+    try {
+      npCreate.disabled = true;
+      const r = await api('POST', '/v1/admin/streaming/pins', {
+        channelSlug: ch.slug, label: npLabel.value.trim() || null, maxDevices: Number(npMax.value) || 1,
+      });
+      npErr.className = 'ok'; npErr.textContent = `PIN created: ${r.pin} — shown once, share it with the viewer.`;
+      npLabel.value = '';
+      reloadPins();
+    } catch (e) { npErr.className = 'err'; npErr.textContent = e.message; }
+    finally { npCreate.disabled = false; }
+  } }, 'Create PIN');
+
+  const securityCard = h('div', { class: 'card' },
+    h('h2', {}, '🔒 Streaming Security'),
+    h('div', { class: 'muted', style: 'margin-bottom:16px' }, 'PIN, device limit and signed playback are one system: enable it here and the same player link enforces it. Advanced controls (active sessions, revocations, origins) live in ',
+      h('a', { href: '/admin/streaming-security.html', style: 'color:var(--accent-red)' }, 'Stream Security'), '.'),
+    h('label', { class: 'chk', style: 'display:flex;align-items:center;gap:10px;text-transform:none;font-size:14px' },
+      requireToggle, h('span', {}, 'Require PIN & device limit for this channel')),
+    h('div', { style: 'margin:6px 0 18px' }, toggleStatus),
+    h('div', { class: 'row', style: 'margin-bottom:14px' },
+      h('button', { onclick: async () => {
+        try {
+          const r = await api('POST', `/v1/channels/${ch.id}/viewer-token`, {});
+          const url = playerUrl(r.ws_url, ch);
+          await copy(url).catch(() => {});
+          prompt('Secure player link (enforces PIN when enabled) — copied to clipboard:', url);
+        } catch (e) { alert(e.message); }
+      } }, 'Copy secure player link'),
+      h('button', { onclick: () => openViewer(ch) }, 'Open player'),
+    ),
+    h('h3', { style: 'text-transform:uppercase;font-size:12px;letter-spacing:0.5px;color:var(--text-muted);margin:6px 0 4px' }, 'PINs for this channel'),
+    pinListEl,
+    h('div', { class: 'row', style: 'margin-top:14px;align-items:end' },
+      h('label', { style: 'margin:0' }, 'Label', npLabel),
+      h('label', { style: 'margin:0' }, 'Max devices', npMax),
+      npCreate,
+    ),
+    npErr,
   );
 
   wrap.append(
@@ -376,12 +486,13 @@ async function openChannel(c, view) {
       h('div', { class: 'row', style: 'margin-top:14px' },
         h('button', { onclick: async () => {
           const r = await api('POST', `/v1/channels/${ch.id}/viewer-token`, {});
-          const url = `${location.origin}/player/?ws=${encodeURIComponent(r.ws_url)}`;
+          const url = playerUrl(r.ws_url, ch);
           prompt('Viewer URL (share or embed):', url);
         }}, 'Get viewer URL'),
         h('button', { onclick: () => openViewer(ch) }, 'Open player'),
       ),
     ),
+    securityCard,
     telemetryCard,
     podSequencerCard,
     h('div', { class: 'card' },
@@ -414,9 +525,19 @@ async function previewAd(ad) {
   );
 }
 
+// Build the player URL. For channels that require a PIN we mark the link
+// `secure=1&ch=<slug>` so the security gate engages; open channels get the
+// plain link (identical to before). One helper, used by every link builder.
+function playerUrl(ws_url, channel) {
+  let url = `${location.origin}/player/?ws=${encodeURIComponent(ws_url)}`;
+  const requirePin = !!(channel && channel.settings && channel.settings.requirePin);
+  if (requirePin && channel.slug) url += `&secure=1&ch=${encodeURIComponent(channel.slug)}`;
+  return url;
+}
+
 async function openViewer(c) {
   const r = await api('POST', `/v1/channels/${c.id}/viewer-token`, {});
-  const url = `${location.origin}/player/?ws=${encodeURIComponent(r.ws_url)}`;
+  const url = playerUrl(r.ws_url, c);
   const embed = `<iframe src="${url}" style="width:100%;aspect-ratio:16/9;border:0"></iframe>`;
   modal(
     h('h2', {}, `Player for "${c.name || c.slug}"`),

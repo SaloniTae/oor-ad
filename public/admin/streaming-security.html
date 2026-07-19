@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streaming Security — oor-ad</title>
+<link rel="stylesheet" href="/admin/streaming-security.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">🔒 <b>Streaming Security</b></div>
+  <nav>
+    <button class="tab active" data-tab="pins">PINs &amp; Device Limits</button>
+    <button class="tab" data-tab="sessions">Active Sessions</button>
+    <button class="tab" data-tab="revocations">Revocation Log</button>
+    <button class="tab" data-tab="channels">Channels &amp; Origins</button>
+    <button class="tab" data-tab="edge">Edge Config</button>
+  </nav>
+  <div class="auth-status">
+    <a href="/admin/" class="backlink">&larr; Main admin</a>
+    <button id="btn-theme" class="theme-toggle" title="Toggle theme (auto / dark / light)" aria-label="Toggle theme">🌗</button>
+    <span id="auth-label">not signed in</span>
+    <button id="btn-signout" hidden>Sign out</button>
+  </div>
+</header>
+
+<!-- SIGN-IN GATE (hidden if already logged into main /admin/) ------------ -->
+<section id="signin" class="panel" hidden>
+  <h2>Sign in</h2>
+  <p class="muted">You're not signed in. If you already have an admin account, <a href="/admin/">sign in via the main admin</a> and come back — this page will pick up your session automatically.</p>
+  <div class="row">
+    <label>Email <input id="in-email" type="email" placeholder="admin@example.com"></label>
+    <label>Password <input id="in-pw" type="password" placeholder="••••••••"></label>
+    <button id="btn-signin">Sign in</button>
+  </div>
+  <div class="row">
+    <label>Or API key <input id="in-key" type="password" placeholder="adi_..."></label>
+    <button id="btn-usekey">Use API key</button>
+  </div>
+  <div id="signin-err" class="err"></div>
+</section>
+
+<!-- PINS + DEVICE LIMIT ------------------------------------------------- -->
+<section id="tab-pins" class="panel" hidden>
+  <div class="section-head">
+    <h2>PINs &amp; Device Limits</h2>
+    <button id="btn-newpin">+ Create PIN</button>
+  </div>
+  <table class="grid">
+    <thead>
+      <tr><th>PIN</th><th>Label</th><th>Channel</th><th>Max devices</th><th>Created</th><th>Expires</th><th>Actions</th></tr>
+    </thead>
+    <tbody id="pins-tbody"></tbody>
+  </table>
+  <p id="pins-empty" class="muted" hidden>No PINs yet — create one to give a viewer access.</p>
+</section>
+
+<!-- ACTIVE SESSIONS ----------------------------------------------------- -->
+<section id="tab-sessions" class="panel" hidden>
+  <div class="section-head">
+    <h2>Active Sessions</h2>
+    <div>
+      <label>PIN <input id="sess-pin" placeholder="type a PIN" maxlength="8"></label>
+      <button id="btn-loadsess">Load sessions</button>
+      <label class="chk"><input type="checkbox" id="autorefresh" checked>Auto-refresh (10s)</label>
+    </div>
+  </div>
+  <table class="grid">
+    <thead><tr><th>Device</th><th>IP</th><th>Connected</th><th>Last heartbeat</th><th>Session id</th><th>Action</th></tr></thead>
+    <tbody id="sess-tbody"></tbody>
+  </table>
+  <p id="sess-empty" class="muted">No active sessions.</p>
+</section>
+
+<!-- REVOCATION LOG ------------------------------------------------------ -->
+<section id="tab-revocations" class="panel" hidden>
+  <div class="section-head">
+    <h2>Revocation Log</h2>
+    <button id="btn-reloadrev">Refresh</button>
+  </div>
+  <table class="grid">
+    <thead><tr><th>When</th><th>PIN</th><th>Device</th><th>IP</th><th>Reason</th><th>Actor</th></tr></thead>
+    <tbody id="rev-tbody"></tbody>
+  </table>
+</section>
+
+<!-- CHANNELS + ORIGIN --------------------------------------------------- -->
+<section id="tab-channels" class="panel" hidden>
+  <div class="section-head">
+    <h2>Channels &amp; Origins</h2>
+    <p class="muted" id="chan-help">Pick the signing method per channel. Global secrets (BUNNY_SECURITY_KEY / NGINX_SECURE_LINK_SECRET) are set once in env; per-channel choice picks which one to use.</p>
+  </div>
+  <table class="grid">
+    <thead><tr><th>Channel</th><th>Live URL</th><th>Origin type</th><th></th></tr></thead>
+    <tbody id="chan-tbody"></tbody>
+  </table>
+</section>
+
+<!-- EDGE CONFIG --------------------------------------------------------- -->
+<section id="tab-edge" class="panel" hidden>
+  <h2>Edge Config Snippets</h2>
+  <p class="muted">Copy-paste ready. Secrets are shown as <code>${'${VAR_NAME}'}</code> placeholders — the server never renders raw keys into responses.</p>
+
+  <h3>Environment variables required</h3>
+  <table class="grid" id="env-grid">
+    <thead><tr><th>Variable</th><th>Required</th><th>Purpose</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h3>nginx <code>secure_link</code></h3>
+  <pre id="edge-nginx" class="code"></pre>
+
+  <h3>Bunny.net Token Authentication</h3>
+  <pre id="edge-bunny" class="code"></pre>
+
+  <h3>TTLs currently in force</h3>
+  <ul id="edge-ttls" class="muted"></ul>
+</section>
+
+<!-- NEW PIN MODAL ------------------------------------------------------- -->
+<div id="modal-newpin" class="modal" hidden>
+  <div class="modal-body">
+    <h3>Create PIN</h3>
+    <label>Label <input id="np-label" placeholder="e.g. Alice's account"></label>
+    <label>Channel (optional, restricts PIN to that channel)
+      <select id="np-slug"><option value="">— any channel (unrestricted) —</option></select>
+    </label>
+    <label>Max devices <input id="np-max" type="number" value="1" min="1" max="100"></label>
+    <label>PIN length
+      <select id="np-len"><option>6</option><option>7</option><option>8</option></select>
+    </label>
+    <label>TTL (seconds, blank = never expires)
+      <input id="np-ttl" type="number" placeholder="e.g. 86400 for 1 day">
+    </label>
+    <div class="row">
+      <button id="np-create">Create</button>
+      <button id="np-cancel" class="ghost">Cancel</button>
+    </div>
+    <div id="np-err" class="err"></div>
+  </div>
+</div>
+
+<script src="/admin/streaming-security.js"></script>
+</body>
+</html>

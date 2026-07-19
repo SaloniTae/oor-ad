@@ -1,0 +1,232 @@
+================================================================================
+OOR-AD API — SECTION 8: VIEWER PLAYER BUILD BRIEF (oormax.lovable.app)
+================================================================================
+Base URL:   https://<your-oor-host>              (referred to below as OOR_HOST)
+Public:     /v1/stream/*   (PIN-authed, NO api-key)   — browser calls directly
+Secured:    /api/v1/channels/{id}/viewer-token         — api-key ONLY (server-side)
+Ref code:   examples/viewer-player/  (mint-viewer edge fn + React player)
+================================================================================
+
+Production viewer player at oormax.lovable.app/watch/:channel that plays a
+channel's REAL live source (HLS .m3u8, extension-less direct URLs, .mp4, .mkv,
+YouTube*), overlays live ad breaks pushed from OOR ("We'll be right back",
+countdowns, image/video/HLS pods), and — for protected channels — gates entry
+behind a PIN with an ask-before-kick device-limit flow. All data is live; nothing
+is mocked. (* YouTube / arbitrary MKV caveats in §11.)
+
+================================================================================
+§3  ARCHITECTURE — READ FIRST
+--------------------------------------------------------------------------------
+One fact dictates the whole design:
+
+  • The PIN flow + signed manifest (/v1/stream/*) are PUBLIC (the PIN itself is
+    the auth). The browser calls these directly.
+  • The viewer WebSocket that delivers ads needs a short-lived VIEWER TOKEN (JWT).
+    That token is minted by POST /api/v1/channels/{id}/viewer-token, which needs
+    your SECRET API KEY (scope playback:write). THE API KEY MUST NEVER SHIP TO
+    THE BROWSER.
+
+So you need a tiny backend function (Supabase/Lovable Edge Function) that holds
+the api key and does one job:
+
+  POST /functions/mint-viewer   { channel: "<id-or-slug>" }
+    -> server-side: POST OOR_HOST/api/v1/channels/{id}/viewer-token
+    -> returns to browser: { wsUrl, channelSlug, channelName, secured }
+
+Everything else (PIN entry, device-limit, playback, ads) happens client-side
+against OOR_HOST. Set OOR_HOST once. Your OOR server must allow the Lovable
+origin (https://oormax.lovable.app) in its CORS allowlist for /api/* and
+/v1/stream/* (it already sends Access-Control-Allow-Credentials).
+
+================================================================================
+§4  ROUTE / CHANNEL BINDING
+--------------------------------------------------------------------------------
+Single route: /watch/:channel   (:channel is the channel id OR slug — both work,
+the mint fn resolves either). On load: call mint-viewer, open the viewer WS, let
+the flow below take over.
+
+================================================================================
+§5  TWO CHANNEL MODES (drives the whole UI)
+--------------------------------------------------------------------------------
+The viewer WS sends a `welcome` message on connect. welcome.channel.requirePin
+decides the mode:
+
+A. OPEN channel (requirePin:false) — welcome.channel.liveUrl is the real source.
+   1. Play liveUrl immediately (hls.js or native, see §11).
+   2. Ads arrive over the same WS. Done.
+
+B. SECURED channel (requirePin:true) — welcome.channel.liveUrl is NULL on purpose
+   (backend refuses to hand a raw URL to an ungated viewer, so there is nothing
+   to bypass). You must:
+   1. Show the PIN gate (§9).
+   2. POST /v1/stream/authorize -> streamToken, or hit device-limit (§10).
+   3. Play the signed manifest GET /v1/stream/manifest.m3u8?stoken=<streamToken>.
+   4. Keep alive with heartbeat + listen for kicks on the lifecycle WS.
+   5. Ads still arrive over the viewer WS exactly as in mode A.
+
+================================================================================
+§6  VIEWER WEBSOCKET PROTOCOL (ads + live source)
+--------------------------------------------------------------------------------
+Connect: wss://OOR_HOST/ws?channel=<slug>&token=<viewerJWT>
+         (the wsUrl from mint-viewer already contains both.)
+
+FROM server:
+  { "type":"welcome", "channel":{ id,slug,name,liveUrl,requirePin }, viewerId, ts }
+  { "type":"state", "state":{ "mode":"live" } }            // or an ad state (§7)
+  { "type":"command", "action":"play_pod", "pod":[...], "startAt":<ms>,
+    "bumper":<sec>, "triggerId":"..." }
+  { "type":"command", "action":"play_ad", adId,adType,adUrl,duration,startAt,
+    bumper,triggerId,metadata }
+  { "type":"command", "action":"resume_live" }
+
+TO server:
+  { "type":"hello" }                                       // ask for state (on open)
+  { "type":"event", "name":"ad.impression", adId,triggerId, meta:{ phase:"ad:0" } }
+  { "type":"event", "name":"ad.complete",   triggerId }    // REQUIRED — see §8
+  { "type":"event", "name":"error:ad_playback_failed", adId,triggerId }
+
+WS close codes: 4401 bad token, 4404 bad channel -> show "stream unavailable",
+do NOT retry on those two.
+
+================================================================================
+§7  AD BREAK UX (bumper, pods, hide ALL player UI)
+--------------------------------------------------------------------------------
+A break is a single ad OR a POD (several ads back-to-back behind one bumper).
+Timeline = startAt (server clock ms) + bumper (sec) + each ad's duration. Run a
+~100ms ticker and derive the current phase from elapsed time (this is how the
+existing player stays frame-synced across all viewers):
+
+  1. BUMPER phase (elapsed < bumper): full-screen "We'll be right back" card.
+     HIDE EVERY piece of player chrome — controls, title, scrubber, unmute.
+     Live audio may keep playing under the bumper; only the ad itself mutes it.
+  2. AD phase, per ad by adType:
+       video/hls -> play in a SEPARATE ad <video> layered over live (cross-fade
+                    0.5s). hls.js if .m3u8 else native.
+       image     -> full-bleed, object-fit:contain, optional click to
+                    metadata.click_url.
+     Show only a minimal "Ad will end in Ns" badge (bottom-left). No other UI.
+  3. RESUME (pod finished / resume_live / cancel): cross-fade back to live,
+     restore normal UI.
+
+Keep TWO <video> elements (live + ad) so the switch is seamless — never tear
+down the live player during an ad.
+
+================================================================================
+§8  THE ad.complete FIX (do this exactly)
+--------------------------------------------------------------------------------
+Some breaks are FULL-LENGTH ads with NO server timer — the only signal that
+resumes live is the player reporting completion. So: when the ad <video> fires
+its native `ended` event (and on your normal pod-finished transition), send
+  { "type":"event", "name":"ad.complete", "triggerId": <current triggerId> }
+over the viewer WS. The backend does an atomic first-viewer-wins resume and fans
+it out to everyone, so sending it from every viewer is safe (duplicates ignored).
+Also emit ad.impression when each ad starts, and error:ad_playback_failed if an
+ad errors — these light up the admin dashboard.
+
+================================================================================
+§9  PIN GATE + SHUTTER ANIMATION
+--------------------------------------------------------------------------------
+When requirePin is true, before any playback:
+  • Full-screen glass card: lock icon, "Enter your PIN", numeric 6–8 digit input
+    (strip non-digits; inputmode=numeric; autocomplete=one-time-code), "Watch".
+  • Submit -> POST /v1/stream/authorize { pin, deviceId, channelSlug }
+      deviceId: stable per-browser UUID in localStorage (crypto.randomUUID once).
+      200 -> success. Store streamToken, sessionId, heartbeatSec. Play the SHUTTER
+             animation: an opaque panel over the player area translates
+             translateY(0) -> translateY(-100%) (bottom-to-top lift ~450ms,
+             cubic-bezier(0.22,1,0.36,1)), revealing the playing signed manifest.
+             Then start heartbeat + lifecycle WS.
+      409 -> device limit reached -> §10.
+      401 invalid_pin        -> "That PIN wasn't recognised."
+      403 pin_channel_mismatch -> "This PIN isn't valid for this channel."
+      404 channel_not_found
+      429 rate_limited       -> "Too many attempts, try again shortly."
+    (Error codes above are exact.)
+
+================================================================================
+§10  DEVICE-LIMIT UX (ask-before-kick)
+--------------------------------------------------------------------------------
+On 409 from authorize the body is:
+  { "error":"device_limit_reached", "maxDevices":1,
+    "activeSessions":[ { sessionId, deviceLabel, connectedAt, ip }, ... ] }
+
+Show an "Already watching elsewhere" card listing each active device
+(deviceLabel, ip, "connected 3m ago" from connectedAt) with an "End & play here"
+button per device, plus "← Back":
+  • End & play here -> POST /v1/stream/confirm-kick
+      { pin, sessionIdToKick, deviceId, channelSlug }
+      200 -> fresh streamToken/sessionId -> run shutter -> play. Kicked device
+             terminates within seconds.
+  • The KICKED device (listening on its lifecycle WS) receives
+      { "type":"session_terminated", "reason":"kicked_by_user" }   (or WS close 4408)
+    and MUST stop playback immediately (DESTROY the hls.js instance, not pause)
+    and show "Playback stopped — this account is now watching on another device"
+    with a "Watch here instead" button that returns to the PIN gate.
+
+================================================================================
+§11  FORMAT SUPPORT (hls.js + honest caveats)
+--------------------------------------------------------------------------------
+  • HLS .m3u8 (incl. signed manifest): hls.js when Hls.isSupported(), else native
+    (Safari). Detect HLS by /\.m3u8(\?|$)/i — that's why the signed manifest URL
+    ends in .m3u8.
+  • Extension-less direct URL: try hls.js if the content is HLS; else <video src>
+    and let the browser sniff.
+  • .mp4 / .webm: native <video>.
+  • .mkv: ⚠ browser support is codec-dependent (Chromium plays some H.264/VP9
+    MKVs, Safari generally won't). Works where codecs allow, fails gracefully
+    elsewhere. No pure-JS fix for arbitrary MKV in-browser.
+  • YouTube: ⚠ hls.js/<video> CANNOT play a YouTube link. Requires the YouTube
+    IFrame Player API (different embed path). For youtube channels we render a
+    YT iframe instead of <video>; ads can't cross-fade over the iframe, so an ad
+    REPLACES the iframe during the break. Conscious tradeoff, not a surprise.
+
+================================================================================
+§12  DESIGN TOKENS (pull from /oor so it matches)
+--------------------------------------------------------------------------------
+  Fonts:
+    --font: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+    --font-mono: "SF Mono", ui-monospace, Menlo, monospace;   /* PIN, countdowns */
+  Brand + gate palette (auto dark/light):
+    --brand:#ff3b3b; --accent:#4f7cff; --accent-2:#6f97ff; --danger:#ff5a6a; --ok:#45c17e;
+    Dark:  scrim rgba(6,7,10,.72)  card rgba(22,24,30,.55)  text #f4f6fb  muted #9aa2b4
+    Light: scrim rgba(228,232,240,.72) card rgba(255,255,255,.62) text #131722 muted #5a6473
+  Glass card: border-radius:22px; backdrop-filter:blur(30px) saturate(1.4);
+              box-shadow:0 24px 80px rgba(0,0,0,.55);
+  PIN input: mono, 26px, letter-spacing .5em, focus ring rgba(79,124,255,.18).
+  Copy: bumper = "We'll be right back", countdown = "Ad will end in Ns".
+
+================================================================================
+§13  SECURITY (non-negotiable)
+--------------------------------------------------------------------------------
+  • API key lives ONLY in the backend function; never in client code / network tab.
+  • Always HTTPS/WSS (signed-URL endpoints reject non-HTTPS in production).
+  • On kick / session_terminated / WS 4408, DESTROY the media instance — pausing
+    isn't enough (player auto-resumes).
+  • Persist deviceId in localStorage; persist a "was kicked" flag in
+    sessionStorage so a reload lands on the terminated screen, not silent play.
+  • Respect heartbeatSec from authorize; a heartbeat returning 403 means
+    terminated -> same teardown.
+
+================================================================================
+§14  DEFINITION OF DONE (real data, not a prototype)
+--------------------------------------------------------------------------------
+  • /watch/:channel (OPEN) plays real live source + real ad breaks end to end.
+  • /watch/:channel (SECURED): PIN gate -> shutter reveal -> signed playback;
+    wrong PIN and device-limit both handled with the exact copy above.
+  • Two browsers on a maxDevices:1 PIN reproduce ask-before-kick -> first one
+    gets the terminated screen live.
+  • Ad <video> `ended` emits ad.complete and the stream resumes for all viewers.
+  • No mocked channels/PINs/sessions — every value comes from the OOR API/WS.
+
+================================================================================
+§15  RELEVANT ENDPOINTS (quick reference)
+--------------------------------------------------------------------------------
+  server-side (api-key):  POST /api/v1/channels/{id}/viewer-token   (02-channels.txt)
+  public (PIN):           POST /v1/stream/authorize
+                          POST /v1/stream/confirm-kick
+                          POST /v1/stream/heartbeat        (Bearer streamToken)
+                          GET  /v1/stream/manifest.m3u8?stoken=...
+                          WS   /stream-ws?stoken=...        (lifecycle / kicks)
+  viewer WS (JWT):        WS   /ws?channel=<slug>&token=<viewerJWT>   (ads)
+  See 03-playback.txt for the full generate/authorize/manifest walkthrough.
+================================================================================

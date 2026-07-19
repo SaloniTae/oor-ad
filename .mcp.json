@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "code-review-graph": {
+      "command": "/root/oor-ad/.crg-venv/bin/python3",
+      "args": [
+        "-m",
+        "code_review_graph",
+        "serve"
+      ],
+      "cwd": "/root/oor-ad",
+      "type": "stdio"
+    }
+  }
+}

@@ -1,0 +1,158 @@
+================================================================================
+OOR-AD API — SECTION 6: PINS, SESSIONS & STREAMING SECURITY
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Auth:       x-api-key header (see 01-keys.txt for auth + error model)
+Scopes:     sessions:read | sessions:write | channels:read | channels:write
+Doc source: server/src/api/routes/pins.js, server/src/api/routes/security.js
+================================================================================
+
+This section mirrors the website's "Streaming Security" screen so a third party
+can build the same PINs / Active Sessions / Revocation Log / Origins UI.
+
+A PIN is the VIEWER IDENTITY for the secured playback flow: it binds to a
+channel, carries a device limit, and is the target of session enforcement
+(kicks / device caps). /playback/generate (03-playback.txt) mints a PIN AND a
+player URL in one call; the endpoints below are the granular management surface.
+
+Everything here (sessions, device limits, kicks) is Redis-backed and fans out
+over Redis pub/sub, so limits and kicks are enforced cluster-wide in real time.
+
+PIN OBJECT:
+    { "pin":"157397", "label":"Living room", "channel_id":"1l8K...",
+      "max_devices":2, "disabled":false, "expires_at":null,
+      "created_at":1784288813595 }
+
+SESSION OBJECT:
+    { "session_id":"69514b2f...", "pin":"157397", "device_id":"...",
+      "device_label":"Browser on macOS", "ip":"203.0.113.4",
+      "connected_at":..., "last_heartbeat":... }
+
+================================================================================
+GET /api/v1/pins?channel_id={id}   (list PINs)
+--------------------------------------------------------------------------------
+Scope: sessions:read
+Query: channel_id (optional) — filter to one channel.
+Example:  curl "https://host/api/v1/pins?channel_id=1l8K..." -H "x-api-key: adi_xxx"
+Success (200): { "items":[ {PIN}, ... ], "request_id":"..." }
+Error (404): CHANNEL_NOT_FOUND (when channel_id is given but not yours)
+
+================================================================================
+POST /api/v1/pins   (create / bind a PIN)
+--------------------------------------------------------------------------------
+Scope: sessions:write
+Body (all optional except you usually want a channel):
+    { "channel_id":"1l8K...",   // OR "channel_slug":"sports-hd-jpfh"
+      "label":"Living room",
+      "max_devices":2,           // 1..100, default 1
+      "ttl_seconds":86400,       // null = never expires
+      "length":6 }               // PIN digit count 6..8, default 6
+
+Example:
+    curl -X POST https://host/api/v1/pins -H "x-api-key: adi_xxx" \
+      -H "Content-Type: application/json" \
+      -d '{"channel_id":"1l8K...","label":"Living room","max_devices":2}'
+
+Success (201): {PIN}   (+ request_id)
+Errors: 404 CHANNEL_NOT_FOUND (field channel_id|channel_slug) · 400 VALIDATION_ERROR
+
+================================================================================
+PATCH /api/v1/pins/{pin}/device-limit   (change the device cap)
+--------------------------------------------------------------------------------
+Scope: sessions:write
+Body:  { "max_devices": 5 }     // 1..100
+Applies to the DB and to the live Redis session registry immediately.
+Example:
+    curl -X PATCH https://host/api/v1/pins/157397/device-limit -H "x-api-key: adi_xxx" \
+      -H "Content-Type: application/json" -d '{"max_devices":5}'
+Success (200): { "pin":"157397", "max_devices":5, "request_id":"..." }
+Error (404): PIN_NOT_FOUND
+
+================================================================================
+DELETE /api/v1/pins/{pin}   (revoke a PIN)
+--------------------------------------------------------------------------------
+Scope: sessions:write
+Disables the PIN (existing sessions can no longer re-authorize).
+Example:  curl -X DELETE https://host/api/v1/pins/157397 -H "x-api-key: adi_xxx"
+Success (200): { "pin":"157397", "disabled":true, "request_id":"..." }
+Error (404): PIN_NOT_FOUND
+
+================================================================================
+GET /api/v1/pins/{pin}/sessions   (active devices on a PIN)
+--------------------------------------------------------------------------------
+Scope: sessions:read
+Example:  curl https://host/api/v1/pins/157397/sessions -H "x-api-key: adi_xxx"
+Success (200):
+    { "pin":"157397", "device_count":2, "sessions":[ {SESSION}, ... ],
+      "request_id":"..." }
+Error (404): PIN_NOT_FOUND
+
+================================================================================
+POST /api/v1/pins/{pin}/sessions/{sessionId}/kick   (force-disconnect a device)
+--------------------------------------------------------------------------------
+Scope: sessions:write
+Terminates the session cluster-wide and writes a revocation-log entry.
+Example:
+    curl -X POST https://host/api/v1/pins/157397/sessions/69514b2f.../kick \
+      -H "x-api-key: adi_xxx"
+Success (200): { "pin":"157397", "session_id":"69514b2f...", "kicked":true,
+                 "request_id":"..." }
+Error (404): PIN_NOT_FOUND
+
+================================================================================
+GET /api/v1/security/revocations?limit=100   (revocation log)
+--------------------------------------------------------------------------------
+Scope: sessions:read
+The "Revocation Log" table — kicks and expiries, most recent first.
+Example:  curl "https://host/api/v1/security/revocations?limit=100" -H "x-api-key: adi_xxx"
+Success (200):
+    { "items":[ { "id":3, "pin":"117794", "session_id":"...",
+                  "device_label":"Browser on Unknown", "ip":"203.0.113.4",
+                  "reason":"kicked_by_owner", "actor":"api",
+                  "created_at":... }, ... ], "request_id":"..." }
+
+================================================================================
+GET  /api/v1/security/channels/{channelId}/origin   (read origin config)
+PUT  /api/v1/security/channels/{channelId}/origin   (set origin config)
+--------------------------------------------------------------------------------
+Scope: channels:read (GET) / channels:write (PUT)
+Controls how signed CDN URLs are generated for a channel's secured playback.
+origin_type: bunny | nginx | direct
+PUT Body:
+    { "origin_type":"bunny", "origin_base":"https://zone.b-cdn.net" }
+    (origin_base optional/nullable for "direct")
+
+Examples:
+    curl https://host/api/v1/security/channels/1l8K.../origin -H "x-api-key: adi_xxx"
+    curl -X PUT https://host/api/v1/security/channels/1l8K.../origin \
+      -H "x-api-key: adi_xxx" -H "Content-Type: application/json" \
+      -d '{"origin_type":"bunny","origin_base":"https://zone.b-cdn.net"}'
+
+Success (200):
+    { "channel_id":"1l8K...", "origin_type":"bunny",
+      "origin_base":"https://zone.b-cdn.net", "updated_at":..., "request_id":"..." }
+Error (404): CHANNEL_NOT_FOUND
+
+================================================================================
+GET /api/v1/security/edge-config   (env + TTL reference; NO secrets)
+--------------------------------------------------------------------------------
+Scope: channels:read
+Documentation the "Edge Config" tab shows: which env vars each origin type
+needs and the signed-URL TTLs. Secrets are NEVER echoed.
+Example:  curl https://host/api/v1/security/edge-config -H "x-api-key: adi_xxx"
+Success (200):
+    { "env_requirements":[ { "name":"HMAC_SIGNING_SECRET", "required":true,
+                             "purpose":"..." }, ... ],
+      "ttl_seconds":{ "segment":..., "mp4":..., "refresh_window":... },
+      "request_id":"..." }
+
+================================================================================
+BUILDING THE STREAMING-SECURITY SCREEN (recap)
+--------------------------------------------------------------------------------
+1. GET /pins?channel_id=...              -> the PINs list
+2. GET /pins/{pin}/sessions              -> Active Sessions per PIN
+3. POST /pins/{pin}/sessions/{id}/kick   -> the "Kick" button
+4. PATCH /pins/{pin}/device-limit        -> the device-cap stepper
+5. GET /security/revocations             -> the Revocation Log
+6. GET/PUT /security/channels/{id}/origin + GET /security/edge-config -> Origins tab
+================================================================================

@@ -1,0 +1,51 @@
+================================================================================
+OOR-AD API — SECTION 7: DASHBOARD OVERVIEW STATS
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Auth:       x-api-key header (see 01-keys.txt)
+Scopes:     telemetry:read   (full-access '*' works too)
+Doc source: server/src/api/routes/overview.js
+================================================================================
+
+Mirrors the website's "Overview" screen — the top-of-dashboard stat cards. One
+call returns account-wide counts so a third party can render the same summary.
+
+Live viewer count comes from the cluster-safe Redis presence set (accurate
+across all workers), NOT a single worker's memory.
+
+================================================================================
+GET /api/v1/overview
+--------------------------------------------------------------------------------
+Purpose:   Account-wide dashboard stats (channels, ads, live viewers, 24h
+           triggers + impressions, and the top ads by impressions).
+Scope:     telemetry:read
+
+Example:
+    curl https://host/api/v1/overview -H "x-api-key: adi_xxx"
+
+Success (200):
+    {
+      "channels": 3,
+      "ads": 6,
+      "active_viewers": 12,          // concurrent, cluster-wide, right now
+      "triggers_24h": 4,
+      "impressions_24h": 37,
+      "top_ads": [                    // last 24h, most impressions first (max 10)
+        { "ad_id": "5QUaZH-eW7jpCb7D", "impressions": 21 },
+        { "ad_id": "skiopFaq2qc7Wm8-", "impressions": 16 }
+      ],
+      "request_id": "req_..."
+    }
+
+Field meanings (same as the website cards):
+    channels         total channels on the account
+    ads              total ad creatives in the library
+    active_viewers   concurrent viewers across all channels (live)
+    triggers_24h     ad breaks started in the last 24h
+    impressions_24h  ad impression events in the last 24h
+    top_ads          ranked ad impression counts (last 24h)
+
+NOTE: For per-channel live state + viewer counts, use:
+    GET /api/v1/channels/{id}/state        (see 02-channels.txt)
+    GET /api/v1/telemetry/realtime         (see 05-telemetry.txt)
+================================================================================

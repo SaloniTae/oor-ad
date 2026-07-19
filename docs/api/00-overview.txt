@@ -1,0 +1,108 @@
+================================================================================
+OOR-AD — API-FIRST PLATFORM (v1)  ·  OVERVIEW & INDEX
+================================================================================
+Base URL:   https://<your-host>/api/v1
+Every endpoint (except GET /api/v1/ping) requires:   x-api-key: <your key>
+================================================================================
+
+WHAT THIS IS
+    A complete, documented, secured API surface that mirrors every action in
+    the website. A third party can build their OWN player UI from scratch using
+    only these endpoints — zero dependency on the embed page.
+
+    This surface (/api/v1/*) is fully separate from the website's own routes
+    (/v1/*). It has its own auth (x-api-key), its own standard error envelope,
+    and its own 404 handling.
+
+AUTH IN ONE LINE
+    Send  x-api-key: <key>  on every call. Admin/full-access keys can do
+    everything; restricted keys carry explicit scopes (read-only by default).
+
+STANDARD RESPONSES
+    - Every response carries a request_id (body + x-request-id header).
+    - Every error:
+        { "error_code":"...", "message":"...", "field":"<if applicable>",
+          "request_id":"req_..." }
+    - Auth error codes: MISSING_KEY, INVALID_KEY, REVOKED, PAUSED, EXPIRED,
+      TENANT_DISABLED, ADMIN_ONLY, INSUFFICIENT_SCOPE, RATE_LIMITED.
+    - Common: VALIDATION_ERROR, NOT_FOUND, *_NOT_FOUND, INTERNAL_ERROR.
+
+SCOPES
+    *                  full access (admin)
+    channels:read/write
+    playback:write
+    sessions:read/write
+    ads:read/write
+    telemetry:read
+
+SECTION FILES
+    01-keys.txt        Admin / API-key management (create, revoke, pause,
+                       rotate, list, usage). ADMIN key required.
+    02-channels.txt    Channel CRUD (m3u8|mp4|mkv|youtube|direct_url), portable
+                       stream reference, PLUS channel-detail sub-resources:
+                       live state, viewer count, recent triggers, viewer-token,
+                       embed snippet.
+    03-playback.txt    Signed pin-based playback URLs, payload on/off toggle,
+                       active sessions, revoke/kick.
+    04-ads.txt         Register creatives, ad library CRUD (get/update/delete),
+                       file upload, signed/preview URL, trigger/cancel ad breaks,
+                       real-time ad-break state (bumper / current ad / pod
+                       progress), full_length ads.
+    05-telemetry.txt   Concurrent viewers, session/ad/error events, device
+                       breakdown. Real-time snapshot + historical query.
+    06-pins.txt        PIN lifecycle (create/list/delete), per-PIN device limit,
+                       per-PIN sessions + kick, revocation log, per-channel
+                       origin config (bunny|nginx|direct), edge-config snippets.
+    07-overview-stats.txt  Dashboard overview counters (channels, ads, live
+                       viewers, 24h triggers/impressions, top ads).
+
+    Every website screen now has an API equivalent — a third party can rebuild
+    the entire dashboard + player from these endpoints alone.
+
+PUSH VS POLL
+    - POLL: /ads/state, /telemetry/realtime, /playback/sessions.
+    - PUSH: viewer WebSocket  wss://host/ws?channel=<slug>&token=<viewer jwt>
+            (play_pod / resume_live / session_terminated) and account webhooks
+            (ad.break_started, ad.break_canceled, ad.completed).
+
+CONCURRENCY / SCALE
+    Sessions, device limits, kicks, ad-break state, presence, and rate limits
+    are all Redis-backed and fan out over Redis pub/sub, so behaviour is
+    correct across multiple cluster workers under concurrent load.
+
+QUICK START (typical third-party flow)
+    1. Admin: POST /admin/keys                       -> get a key (shown once)
+    2. POST /channels                                -> create a channel
+    3. POST /playback/generate                       -> pin + playback_url + token
+    4. Your player: POST /v1/stream/authorize {pin,deviceId,channelSlug}
+                    -> streamToken -> load /v1/stream/manifest?stoken=...
+    5. POST /ads/trigger                             -> start an ad break
+    6. GET  /ads/state / /telemetry/realtime         -> render your own overlays
+
+REBUILD-THE-WEBSITE MAP (every UI screen -> API)
+    Overview page       GET  /overview
+    Channels list       GET  /channels                 (paginated)
+    + New channel       POST /channels
+    Channel detail:
+      · header/info     GET  /channels/{id}            (name, slug, source_url)
+      · live telemetry  GET  /channels/{id}/state      (mode + viewers, poll 1s)
+      · recent triggers GET  /channels/{id}/triggers
+      · edit / delete   PATCH / DELETE /channels/{id}
+      · get viewer URL  POST /channels/{id}/viewer-token   (+ /embed snippet)
+      · security card   POST /playback/payload  (+ /pins*, see below)
+    Ad Library:
+      · list            GET  /ads
+      · upload file     POST /ads/upload   (multipart "file")
+      · add by URL      POST /ads
+      · preview         GET  /ads/{id}/signed-url
+      · edit / delete   PATCH / DELETE /ads/{id}
+    Ad Sequencer/pod    POST /ads/trigger  ·  cancel: POST /ads/cancel
+    Events page         GET  /telemetry/events
+    Stream Security:
+      · PINs+devices    /pins, POST /pins, PATCH /pins/{pin}/device-limit
+      · active sessions GET  /pins/{pin}/sessions  ·  kick: POST .../kick
+      · revocation log  GET  /security/revocations
+      · origins         GET/PUT /security/channels/{id}/origin
+      · edge config     GET  /security/edge-config
+    API keys screen     /admin/keys*  (see 01-keys.txt)
+================================================================================
